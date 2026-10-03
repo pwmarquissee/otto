@@ -48,6 +48,10 @@ sees the whole old file or the whole new one.
 Taken from a public build running against synthetic data (two scratch herdr panes, an
 invented board). The dashboard is dark by default and follows a light OS theme.
 
+![Setup](docs/screenshots/setup.png)
+
+**Setup**: what a fresh daemon opens on; each step read from live state, with the reason it matters, the action, and the terminal equivalent.
+
 ![Today](docs/screenshots/today.png)
 
 **Today**: what Otto has to say, what needs you now, and where yesterday went.
@@ -73,39 +77,45 @@ invented board). The dashboard is dark by default and follows a light OS theme.
 Requirements: Python 3.13. Windows is the only platform this has been run on (see
 Status below).
 
-A fresh daemon starts with every schedule disarmed: nothing runs unattended until
-you say so. Once the integration behind a schedule is configured, arm it with
-`otto schedule arm <name>` (or set `OTTO_ARM_DEFAULT_SCHEDULES=1` before first
-start to arm the seeded read-only ones).
-
 ```
 pip install -r requirements.txt
 python -m otto serve            # daemon + dashboard on http://127.0.0.1:8787
 ```
 
-In a second shell:
+Open the dashboard. On a fresh daemon it opens on **Setup**, a short checklist that
+walks through what is worth doing, in order: who you are and where your projects
+live, the Claude Code hooks (so live sessions show up), the optional herdr terminal
+harness, which outside services to probe, your first card, and which of the seeded
+read-only schedules to arm. Each step shows its status from live state, the plain
+reason it matters, a button or form, and the equivalent terminal command. Nothing
+blocks: every step can be skipped and revisited later from Control plane, System.
+
+The same flow runs in a terminal:
 
 ```
-python -m otto status
-python -m otto sessions install # Claude Code hooks, so live sessions show up
+python -m otto setup            # prompts for what is not done yet
+python -m otto setup --status   # print the steps; exit 0 when complete
 ```
 
-`sessions install` merges six hooks into `~/.claude/settings.json` under a marker,
-alongside whatever is already there, and `sessions uninstall` removes exactly those.
-Note that `~/.claude/settings.local.json` does not load hooks, which is why the
-user-level file is the target.
+What setup writes lands in one file, `<OTTO_HOME>/otto.env` (default
+`~/.claude/otto/otto.env`), in the same `KEY=value` form as `.env.example`. Values set
+in the environment always win over the file. Because configuration is read when the
+daemon starts, the view shows a Restart button after a change; `python -m otto restart`
+does the same from a terminal.
 
-Optional, for the dispatch control room and embedded terminals: install
-[herdr](https://herdr.dev), then
+A fresh daemon starts with every schedule disarmed: nothing runs unattended until you
+say so, either in Setup or with `otto schedule arm <name>`.
 
-```
-python -m otto herdr up         # start the herdr server
-python -m otto herdr open .     # a workspace here with claude running in it
-```
-
+If you would rather do it by hand: `python -m otto sessions install` merges six hooks
+into `~/.claude/settings.json` under a marker, alongside whatever is already there,
+and `sessions uninstall` removes exactly those. Note that
+`~/.claude/settings.local.json` does not load hooks, which is why the user-level file
+is the target. For the dispatch control room and embedded terminals, install
+[herdr](https://herdr.dev), then `python -m otto herdr up` starts the server and
+`python -m otto herdr open .` opens a workspace here with claude running in it.
 `herdr integration install claude` adds herdr's own SessionStart hook, which reports
-the Claude session id into the pane record. That id is what Otto's hooks key
-sessions on, so a pane and a session are the same thing by construction.
+the Claude session id into the pane record; that id is what Otto's hooks key sessions
+on, so a pane and a session are the same thing by construction.
 
 `scripts/Install-OttoDaemon.ps1` registers a logon task and a ten-minute keepalive
 (`otto ensure`) so the daemon comes back if it dies. `scripts/otto.ps1` is a
@@ -113,8 +123,9 @@ PowerShell wrapper so you can type `otto` instead of `python -m otto`.
 
 ## Configuration
 
-Copy `.env.example` and set what you need. Every `OTTO_*` variable is read by
-`otto/config.py` at import time. Every organization-specific value (Slack channels,
+Every `OTTO_*` variable is read by `otto/config.py` when the daemon starts, from the
+environment first and then from `<OTTO_HOME>/otto.env` (what Setup writes). `.env.example`
+documents all of them. Every organization-specific value (Slack channels,
 cloud profiles, people, repositories, model names) is configuration, and the defaults
 are inert: with nothing set, Otto runs the board, schedules, sessions, and dispatch
 on loopback and talks to no external service.
@@ -326,3 +337,4 @@ Honest limits of this release:
 ## License
 
 MIT. See `LICENSE`.
+

@@ -66,6 +66,7 @@ OUTREACH = "outreach.json"
 SESSIONS = "sessions.json"
 PROPOSALS = "logistics.json"
 KNOWN = "known.json"
+SETUP = "setup.json"
 EVENTS = "events.jsonl"
 # Claude Code's own per-request telemetry, appended by the OTLP receiver in the
 # daemon. Read by ledger.py; the file layout is telemetry.py's.
@@ -750,6 +751,24 @@ class Store:
 
     # ---- integrations -------------------------------------------------------
 
+
+    # ---- setup: first-run progress, see otto/setup.py ----------------------
+
+    def setup(self) -> dict[str, Any]:
+        data = self._read(SETUP, {})
+        return data if isinstance(data, dict) else {}
+
+    def put_setup(self, patch: dict[str, Any]) -> dict[str, Any]:
+        """Merge, never replace: completion, skips, and the restart flag are written
+        by different requests and none of them should erase the others."""
+        data = self.setup()
+        for k, v in patch.items():
+            if v is None:
+                data.pop(k, None)
+            else:
+                data[k] = v
+        self._write(SETUP, data)
+        return data
     def integrations(self) -> list[Integration]:
         return [Integration.model_validate(i) for i in self._read(INTEGRATIONS, [])]
 

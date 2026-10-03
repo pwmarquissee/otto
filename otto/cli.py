@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -2904,6 +2905,21 @@ def cmd_ensure(args, client: Client) -> int:
     things are healthy, because a logon trigger alone leaves a daemon that died at
     02:00 dead until the next logon, and every armed schedule silently misses.
     """
+    wait_pid = getattr(args, "wait_pid", None)
+    if wait_pid:
+        # Spawned by /api/daemon/restart: the old daemon is about to exit and still
+        # answers for a moment. Starting now would collide on the port, so wait for
+        # that pid to be gone, then proceed as the keepalive would.
+        import psutil
+        for _ in range(120):
+            if not psutil.pid_exists(wait_pid):
+                break
+            time.sleep(0.25)
+        else:
+            print(_c(f"  pid {wait_pid} is still alive after 30s; not starting a second daemon",
+                     C_YEL), file=sys.stderr)
+            return 1
+
     if client.alive():
         if not args.quiet:
             print("  daemon already running")
@@ -2979,6 +2995,182 @@ def cmd_stop(args, client: Client) -> int:
             print(f"    {persona.short(r['id'])} {r['name']}  (pid {r['pid']})")
         print(_c("  start the daemon again and it will re-adopt them", C_DIM))
     return 0 if ok else 1
+
+
+def cmd_restart(args, client: Client) -> int:
+    """Stop, then ensure. The way to apply a changed otto.env from a terminal."""
+    if client.alive():
+        rc = cmd_stop(args, client)
+        if rc:
+            return rc
+        for _ in range(40):
+            if not client.alive():
+                break
+            time.sleep(0.25)
+    args.quiet = False
+    args.wait_pid = None
+    return cmd_ensure(args, client)
+
+
+_SETUP_PILL = {"done": ("done", C_GRN), "todo": ("to do", C_YEL), "skipped": ("skipped", C_DIM),
+               "restart": ("restart", C_YEL)}
+
+
+def _print_setup(view: dict) -> None:
+    prog = view["progress"]
+    head = (f"complete since {view['completed_at'][:10]}" if view.get("complete")
+            else f"{prog['done']} of {prog['total']} done")
+    print()
+    print(_c("  SETUP", C_BOLD) + f"   {head}"
+          + (_c("   restart needed: otto restart", C_YEL) if view.get("restart_needed") else ""))
+    print(_c(f"  settings file {view['settings']['path']}"
+             + ("" if view["settings"]["exists"] else " (not written yet)"), C_DIM))
+    print()
+    for st in view["steps"]:
+        label, color = _SETUP_PILL.get(st["status"], (st["status"], ""))
+        req = "" if st["required"] else _c(" optional", C_DIM)
+        print(f"    {_cpad(label, 8, color)} {st['title']:<26}{req}")
+        print(_c(f"             {st['summary']}", C_DIM))
+    print()
+
+
+def _ask(prompt: str, default: str = "") -> str:
+    hint = f" [{default}]" if default else ""
+    try:
+        raw = input(f"  {prompt}{hint}: ").strip()
+    except EOFError:
+        return default
+    return raw or default
+
+
+def _ask_yes(prompt: str, default: bool = True) -> bool:
+    raw = _ask(prompt + (" (Y/n)" if default else " (y/N)"), "")
+    if not raw:
+        return default
+    return raw.lower().startswith("y")
+
+
+def _setup_offline(args) -> int:
+    """The daemon is down. Two things still work: writing otto.env and installing
+    the hooks. Both are local file writes, and both are what a fresh machine does
+    first anyway."""
+    from . import sessions as _sessions
+    from . import settings as _settings
+    from . import setup as _setup
+
+    print(_c(f"  the daemon is not running ({config.BASE_URL}); start it with otto ensure", C_YEL))
+    print(_c("  with it down, setup can still write the settings file and install the hooks", C_DIM))
+    if args.status or args.reset:
+        return 1
+    if _ask_yes("Write identity settings now?", True):
+        vals = {"OTTO_OWNER_NAME": _ask("Your name"), "OTTO_ORG_NAME": _ask("Organization"),
+                "OTTO_WORK_ROOTS": _ask(f"Work roots ({os.pathsep!r}-separated)"),
+                "OTTO_PERSONAL_ROOTS": _ask(f"Personal roots ({os.pathsep!r}-separated)")}
+        try:
+            clean = _setup.validate_identity({k: v for k, v in vals.items() if v})
+            written, _removed = _settings.write(clean, config.SETTINGS_PATH)
+            print(f"  wrote {', '.join(written) or 'nothing'} to {config.SETTINGS_PATH}")
+        except (ValueError, OSError) as e:
+            print(_c(f"  {e}", C_RED), file=sys.stderr)
+            return 1
+    if _ask_yes("Install the Claude Code hooks?", True):
+        _changed, msg = _sessions.install()
+        print(f"  {msg}")
+    print("  start the daemon (otto ensure) and run otto setup again for the rest")
+    return 0
+
+
+def _setup_step(client: Client, st: dict) -> None:
+    """Prompt for one step and act on the answer. Each kind maps onto the same
+    endpoint the dashboard uses, so the two faces cannot drift."""
+    kind = st["action"]["kind"]
+    if kind == "form" and st["id"] == "identity":
+        vals = {}
+        for f in st["action"]["fields"]:
+            cur = f["value"].replace("\n", os.pathsep) if f["kind"] == "paths" else f["value"]
+            label = f["label"] + (f" ({os.pathsep!r}-separated)" if f["kind"] == "paths" else "")
+            v = _ask(label, cur)
+            if v:
+                vals[f["name"]] = v
+        if vals:
+            out = client.setup_post("/api/setup/settings", {"values": vals})
+            print(f"  wrote {', '.join(out['written']) or 'nothing'}")
+        return
+    if kind == "form" and st["id"] == "first_card":
+        title = _ask("Title")
+        if title:
+            client.setup_post("/api/setup/first-card", {"title": title, "detail": _ask("Detail") or None})
+            print("  card added")
+        return
+    if kind == "button":
+        if _ask_yes(st["action"]["label"] + "?", True):
+            out = client.setup_post(st["data"]["endpoint"])
+            print(f"  {out.get('message') or 'done'}")
+        return
+    if kind == "choice":
+        picks = []
+        for o in st["action"]["options"]:
+            if _ask_yes(f"{o['label']}: {o['hint'][:60]}", bool(o.get("checked"))):
+                picks.append(o["value"])
+        if st["data"].get("setting"):
+            client.setup_post("/api/setup/settings",
+                              {"values": {st["data"]["setting"]: ",".join(picks) or "none"}})
+        else:
+            client.setup_post(st["data"]["endpoint"], {"arm": picks})
+        print(f"  saved: {', '.join(picks) or 'none'}")
+        return
+    # kind == "none": nothing to do here but record the choice
+    if _ask_yes("Skip this step?", True):
+        client.setup_post("/api/setup/skip", {"step": st["id"]})
+
+
+def cmd_setup(args, client: Client) -> int:
+    """The terminal face of otto/setup.py: same steps, same statuses, same file.
+
+    Needs the daemon for most of it (statuses come from live state and the store
+    is daemon-written). The two things a fresh machine does first, writing
+    otto.env and installing the hooks, work with the daemon down.
+    """
+    if not client.alive():
+        return _setup_offline(args)
+
+    if args.reset:
+        view = client.setup_post("/api/setup/reset")
+        print("  setup reset; the dashboard opens on Setup again")
+        _print_setup(view)
+        return 0
+
+    view = client.setup_view()
+    if args.json:
+        print(json.dumps(view, indent=2))
+        return 0 if view["complete"] else 1
+    _print_setup(view)
+    if args.status:
+        return 0 if view["complete"] else 1
+    if view["complete"]:
+        print(_c("  already complete; otto setup --reset to run it again", C_DIM))
+        return 0
+
+    for st in view["steps"]:
+        if st["status"] in ("done", "skipped", "restart") or st["id"] in ("daemon", "finish"):
+            continue
+        print(_c(f"  {st['title']}", C_BOLD))
+        print(textwrap.fill(st["detail"], 78, initial_indent="  ", subsequent_indent="  "))
+        try:
+            _setup_step(client, st)
+        except RuntimeError as e:
+            print(_c(f"  {e}", C_RED), file=sys.stderr)
+        print()
+
+    view = client.setup_view()
+    _print_setup(view)
+    if view["restart_needed"] and _ask_yes("Restart the daemon now to apply the settings?", True):
+        cmd_restart(args, client)
+        view = client.setup_view()
+    if not view["complete"] and _ask_yes("Mark setup complete?", True):
+        client.setup_post("/api/setup/complete")
+        print("  setup complete")
+    return 0
 
 
 def cmd_serve(args, client: Client) -> int:
@@ -4412,7 +4604,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("ensure", help="start the daemon if it is not running")
     s.add_argument("--quiet", action="store_true")
+    s.add_argument("--wait-pid", type=int, metavar="PID",
+                   help="wait for this pid to exit first (used by the dashboard restart)")
     s.set_defaults(fn=cmd_ensure)
+
+    s = sub.add_parser("restart", help="stop the daemon and start it again (applies otto.env)")
+    s.set_defaults(fn=cmd_restart)
+
+    s = sub.add_parser("setup", help="first-run setup: see what is configured and fill in the rest")
+    s.add_argument("--status", action="store_true", help="print the steps and exit; 0 when complete")
+    s.add_argument("--reset", action="store_true", help="clear completion so the Setup view opens again")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_setup)
 
     s = sub.add_parser("stop", help="stop the daemon, leaving agents running")
     s.set_defaults(fn=cmd_stop)

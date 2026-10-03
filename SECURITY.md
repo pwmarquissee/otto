@@ -139,6 +139,16 @@ localhost from its HTTP gate: writing to the board is their job. This is a desig
 choice for a single-user workstation, not an oversight. If you need a boundary
 between local processes, Otto is the wrong tool without adding authentication.
 
+Two routes added with the setup flow sit in the same trust class and are worth
+naming. `POST /api/setup/settings` writes `<OTTO_HOME>/otto.env`; it accepts only
+keys matching `^OTTO_[A-Z0-9_]+$` that `.env.example` documents, so a local process
+can change Otto's own configuration but cannot plant `PATH` or anything another
+program reads, and a value the file holds is overridden by the same name in the
+environment. `POST /api/daemon/restart` exits the daemon and lets the keepalive entry
+point start it again with a clean environment; a local process could already do that
+with `otto stop`. Neither route is reachable from a web page, because both are
+behind the Origin and Host allowlist above.
+
 ### The guard hook is a seatbelt, not a sandbox
 
 `scripts/otto_guard.py` is a Claude Code PreToolUse hook that pattern-matches tool
@@ -227,6 +237,7 @@ which is not listed. The desktop shell's Rust dependencies are pinned by
 | `OTTO_GUARD_CRED_COMMANDS`, `OTTO_GUARD_CRED_FILES`, `OTTO_GUARD_IDP_TOOL_PATTERN` | the guard's credential and IdP gates; empty disables them |
 | `OTTO_GUARD_ASK`, `OTTO_GUARD_ASK_TIMEOUT` | dialog versus flat deny, and the wait |
 | `OTTO_CREDENTIAL_RUN` | the credential CLI that injects the Slack token |
+| `OTTO_INTEGRATIONS` | which outside services the daemon probes every five minutes; `none` makes no outbound probe call at all |
 
 ## Reporting a vulnerability
 

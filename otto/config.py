@@ -13,6 +13,13 @@ from typing import Any, NamedTuple
 from urllib.parse import urlsplit
 
 from .originguard import default_hosts, default_origins
+from . import settings as _settings
+
+# The one file Otto writes for itself, <OTTO_HOME>/otto.env, pulled into the
+# environment before anything below resolves. Environment wins over the file, the
+# file wins over the defaults here. See otto/settings.py and docs/control-room/setup.md.
+SETTINGS_APPLIED: tuple[str, ...] = tuple(_settings.apply())
+SETTINGS_PATH = _settings.default_path()
 
 # ---- persona ----------------------------------------------------------------
 
@@ -179,6 +186,17 @@ TICK_SECONDS = int(os.environ.get("OTTO_TICK", "15"))
 # Otto probes ONE named profile to answer "is my SSO session live". Point this at the
 # profile whose session the automation actually depends on.
 AWS_PROFILE = os.environ.get("OTTO_AWS_PROFILE", "default").strip() or "default"
+
+# Which integration probes run. Unset means every probe, which is what an install
+# that predates the setting expects. Set means exactly these; "none" means no
+# probe at all. A probe for a product nobody here uses manufactures a red row that
+# can never go green, and `otto setup` writes this so a fresh install never has one.
+_integrations_raw = os.environ.get("OTTO_INTEGRATIONS")
+INTEGRATIONS_SET = _integrations_raw is not None
+INTEGRATIONS: tuple[str, ...] | None = (
+    None if _integrations_raw is None
+    else tuple(x.strip().lower() for x in _integrations_raw.split(",")
+               if x.strip() and x.strip().lower() != "none"))
 
 # ---- discovery --------------------------------------------------------------
 

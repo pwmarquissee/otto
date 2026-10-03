@@ -215,9 +215,19 @@ PROBES = [
 ]
 
 
+def enabled_probes() -> list:
+    """PROBES filtered by config.INTEGRATIONS. Unset keeps every probe; set keeps
+    exactly the named ones, so a disabled product has no row at all rather than a
+    permanent red one."""
+    if config.INTEGRATIONS is None:
+        return list(PROBES)
+    want = set(config.INTEGRATIONS)
+    return [fn for fn in PROBES if fn.__name__.replace("probe_", "") in want]
+
+
 def probe_all() -> list[Integration]:
     out: list[Integration] = []
-    for fn in PROBES:
+    for fn in enabled_probes():
         try:
             out.append(fn())
         except Exception as e:  # noqa: BLE001 - a broken probe must not stop the sweep

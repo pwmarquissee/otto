@@ -12,6 +12,7 @@ trip to an external API must not stall the dashboard.
 from __future__ import annotations
 
 import contextlib
+import os
 import gzip
 import hashlib
 import json
@@ -40,6 +41,7 @@ from . import (activity, advisor, board, chat, config, configsync, decisions, de
                triage, verdict, wellbeing, writing)
 # Aliased, matching advisor.py: several functions in here bind a local `today` to a
 # date string, and a module of the same name shadowed by a local is a trap.
+from . import settings, setup
 from . import today as _today
 from .models import Alert, Cadence, Run, Schedule, Snapshot, Task, iso, utcnow
 from .originguard import OriginGuard, default_origins
@@ -407,9 +409,12 @@ def compute_alerts() -> list[Alert]:
                                     source=f"run/{persona.short(run.id)}",
                                     message=f"{run.name}: {v['line']}"))
 
+    setup_done = setup.is_complete(store)
     for i in store.integrations():
         if i.ok:
             continue
+        if i.mode == "unconfigured" and not setup_done:
+            continue  # the Setup view carries these until setup is finished (board.py says why)
         level = "warn" if i.mode in ("unconfigured", "mcp-only") else "crit"
         detail = i.detail
         k = kn.get(known.key("integration", i.name))
@@ -778,6 +783,8 @@ async def lifespan(app: FastAPI):
     config.ensure_dirs()
     _write_pidfile()
     seed_schedules()
+    with store.lock:
+        setup.migrate(store)
     store.log(f"{config.PERSONA_NAME} daemon up on {config.BASE_URL}", source="daemon")
     if config.HERDR_AUTOSTART:
         # The harness before the first tick looks for panes. Nothing here may stop
@@ -1192,6 +1199,7 @@ def _compute_state() -> dict[str, Any]:
         "active_runs": len([r for r in runs if r.active]),
         "schedules": sched_rows,
         "integrations": integ_rows,
+        "setup": setup.summary(store),
         "known": known_items,
         "registry_summary": registry.summarize(entries),
         "registry_by_domain": registry.summarize_by_domain(entries),
@@ -2308,6 +2316,168 @@ def post_meetings_ingest() -> dict[str, Any]:
     store.upsert_run(run)
     store.log("meeting-notes ingest started", source="meetings", run_id=run.id)
     return {"run": run.model_dump()}
+
+
+# ---- setup: first run -----------------------------------------------------------
+# One engine behind the dashboard's Setup view and `otto setup` (otto/setup.py).
+# Everything here is loopback and goes through OriginGuard like every other route.
+# Writes go to <OTTO_HOME>/otto.env (otto/settings.py); config is import-time, so a
+# write reports restart_needed and /api/daemon/restart carries the restart.
+
+class SetupSettingsRequest(BaseModel):
+    values: dict[str, str | None]
+
+
+class SetupStepRequest(BaseModel):
+    step: str
+
+
+class SetupFirstCardRequest(BaseModel):
+    title: str
+    detail: str | None = None
+
+
+class SetupSchedulesRequest(BaseModel):
+    arm: list[str] = []
+
+
+@app.get("/api/setup")
+def get_setup() -> dict[str, Any]:
+    return setup.view(store)
+
+
+@app.post("/api/setup/settings")
+def post_setup_settings(req: SetupSettingsRequest) -> dict[str, Any]:
+    values = dict(req.values)
+    identity_keys = {"OTTO_OWNER_NAME", "OTTO_ORG_NAME", "OTTO_WORK_ROOTS", "OTTO_PERSONAL_ROOTS"}
+    try:
+        if identity_keys & set(values):
+            ident = setup.validate_identity({k: v for k, v in values.items() if k in identity_keys})
+            values = {**{k: v for k, v in values.items() if k not in identity_keys}, **ident}
+        if "OTTO_INTEGRATIONS" in values and values["OTTO_INTEGRATIONS"] is not None:
+            allowed = {c[0] for c in setup.INTEGRATION_CHOICES}
+            picked = [x.strip().lower() for x in str(values["OTTO_INTEGRATIONS"]).split(",") if x.strip()]
+            bad = [x for x in picked if x not in allowed and x != "none"]
+            if bad:
+                raise ValueError(f"unknown integration: {', '.join(bad)}")
+            values["OTTO_INTEGRATIONS"] = ",".join(x for x in picked if x != "none") or "none"
+        with store.lock:
+            return setup.write_settings(store, values)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except OSError as e:
+        raise HTTPException(500, f"could not write {config.SETTINGS_PATH}: {e}") from e
+
+
+@app.post("/api/setup/hooks/install")
+def post_setup_hooks() -> dict[str, Any]:
+    try:
+        changed, message = sessions.install()
+    except OSError as e:
+        raise HTTPException(500, str(e)) from e
+    if changed:
+        store.log(f"setup: {message}", source="setup")
+    return {"changed": changed, "message": message}
+
+
+@app.post("/api/setup/herdr/up")
+def post_setup_herdr() -> dict[str, Any]:
+    started, message = herdr.ensure_server()
+    ok = started or herdr.server_running()
+    if started:
+        store.log(f"setup: {message}", source="herdr")
+    return {"ok": ok, "message": message}
+
+
+@app.post("/api/setup/first-card")
+def post_setup_first_card(req: SetupFirstCardRequest) -> dict[str, Any]:
+    title = req.title.strip()
+    if not title:
+        raise HTTPException(400, "title is required")
+    return create_task(TaskRequest(title=title, detail=(req.detail or "").strip() or None,
+                                   status="backlog", auto=False))
+
+
+@app.post("/api/setup/schedules")
+def post_setup_schedules(req: SetupSchedulesRequest) -> dict[str, Any]:
+    armed: list[str] = []
+    for name in req.arm:
+        if not safeargs.is_agent_name(name):
+            # Schedule names share the agent-name shape (lowercase, digits, dashes);
+            # anything else never matches a seeded schedule and is not worth a 404 loop.
+            raise HTTPException(400, f"bad schedule name: {name!r}")
+        arm_schedule(name, armed=True)
+        armed.append(name)
+    return {"armed": armed}
+
+
+@app.post("/api/setup/skip")
+def post_setup_skip(req: SetupStepRequest) -> dict[str, Any]:
+    try:
+        with store.lock:
+            setup.skip(store, req.step)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return setup.view(store)
+
+
+@app.post("/api/setup/unskip")
+def post_setup_unskip(req: SetupStepRequest) -> dict[str, Any]:
+    try:
+        with store.lock:
+            setup.skip(store, req.step, undo=True)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return setup.view(store)
+
+
+@app.post("/api/setup/complete")
+def post_setup_complete() -> dict[str, Any]:
+    with store.lock:
+        setup.complete(store)
+    return setup.view(store)
+
+
+@app.post("/api/setup/reset")
+def post_setup_reset() -> dict[str, Any]:
+    with store.lock:
+        setup.reset(store)
+    return setup.view(store)
+
+
+def _restart_helper_argv(pid: int) -> list[str]:
+    """What the restart spawns: the keepalive entry point, told to wait for this
+    pid to be gone first. Kept as a function so a test can check the argv
+    without a daemon dying."""
+    import sys as _sys
+    return [_sys.executable, "-m", "otto", "ensure", "--wait-pid", str(pid), "--quiet"]
+
+
+def _exit_after(delay: float) -> None:
+    """Leave the way `otto stop` would: pidfile cleared, this process only. Spawned
+    agents are not touched and the next daemon re-adopts them from runs.json."""
+    import os as _os
+    time.sleep(delay)
+    _clear_pidfile()
+    _os._exit(0)
+
+
+@app.post("/api/daemon/restart")
+def post_daemon_restart() -> dict[str, Any]:
+    import subprocess
+    pid = psutil.Process().pid
+    repo = str(Path(__file__).resolve().parent.parent)
+    creation = (0x00000200 | 0x08000000) if os.name == "nt" else 0
+    try:
+        subprocess.Popen(_restart_helper_argv(pid), cwd=repo, env=herdr.clean_env(),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, creationflags=creation, close_fds=True)
+    except OSError as e:
+        raise HTTPException(500, f"could not spawn the restart helper: {e}") from e
+    store.log("restart requested from the dashboard; the keepalive helper brings the daemon back",
+              source="daemon")
+    threading.Thread(target=_exit_after, args=(0.4,), daemon=True, name="otto-restart").start()
+    return {"ok": True, "pid": pid, "message": "restarting; poll /api/health until the pid changes"}
 
 
 @app.get("/api/config")

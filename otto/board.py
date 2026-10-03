@@ -201,8 +201,16 @@ def derived_cards(store: Store) -> list[BoardCard]:
                 command=f"otto ack {persona.short(run.id)}",
             ))
 
+    # Unconfigured probes are a setup matter until setup is finished: the Setup view
+    # carries them, and a fresh install should not open to a wall of red about
+    # services the person may never use. Real outages (configured, now failing)
+    # still land here either way.
+    from . import setup as _setup
+    setup_done = _setup.is_complete(store)
     for i in store.integrations():
         if i.ok or i.mode == "mcp-only":
+            continue
+        if i.mode == "unconfigured" and not setup_done:
             continue
         cards.append(BoardCard(
             id=f"integration:{i.name}",

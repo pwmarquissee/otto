@@ -2554,3 +2554,165 @@ select.input { cursor: pointer; }
   transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
 }
 .col-more:hover { background: var(--fill-1); border-color: var(--border-strong); color: var(--text-primary); }
+
+/* ══════════════════════════ setup (first run) ══════════════════════════
+ *
+ * One card per step, in order. Status pills use the semantic tokens; the card's
+ * left edge repeats the status so a long list scans without reading each pill.
+ * Same gutter rule as the rest of the app: 16px at phone width, no horizontal scroll. */
+.su-wrap {
+  display: flex; flex-direction: column; gap: var(--space-4);
+  min-width: 0; max-width: 840px;
+  padding: var(--space-5) var(--space-6) 64px;
+}
+.su-head { display: flex; flex-direction: column; gap: var(--space-3); }
+.su-title { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.su-title h2 { font-family: var(--font-heading); font-weight: 600; font-size: var(--fs-lg); }
+.su-sub { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-secondary); }
+.su-head-acts { display: flex; gap: var(--space-2); margin-left: auto; flex-wrap: wrap; }
+.su-bar {
+  position: relative; height: 3px; border-radius: 2px; overflow: hidden;
+  background: var(--fill-3);
+}
+.su-bar-fill {
+  display: block; height: 100%; border-radius: 2px;
+  background: var(--accent);
+  transition: width var(--dur-base) var(--ease);
+}
+
+/* The rail badge: a fraction, not a count, so it reads as progress rather than load. */
+.mode-count.su-count {
+  background: var(--accent-soft); color: var(--accent);
+  border: 1px solid var(--accent-line);
+}
+
+/* The restart banner. A status strip in the same voice as the connection banner,
+ * warn-striped because nothing is broken, something is pending. */
+.su-banner {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  box-shadow: inset 3px 0 0 var(--warn);
+  background: var(--surface-1);
+  font-size: var(--fs-sm); color: var(--text-body);
+}
+.su-banner > i { font-size: 16px; color: var(--warn); flex: none; }
+.su-banner.bad { box-shadow: inset 3px 0 0 var(--crit); }
+.su-banner.bad > i { color: var(--crit); }
+.su-banner-text { flex: 1 1 200px; min-width: 0; }
+.su-banner code { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-primary); }
+.su-banner .spin { width: 12px; height: 12px; }
+
+.su-steps { display: flex; flex-direction: column; gap: var(--space-3); }
+.su-step {
+  display: flex; flex-direction: column; gap: var(--space-2); min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-md);
+  background: var(--surface-1);
+  box-shadow: inset 3px 0 0 var(--border-strong);
+  transition: border-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+}
+.su-step:hover { border-color: var(--border-strong); }
+.su-step.su-done { box-shadow: inset 3px 0 0 var(--ok); }
+.su-step.su-restart { box-shadow: inset 3px 0 0 var(--warn); }
+.su-step.su-skipped { box-shadow: inset 3px 0 0 var(--border-subtle); }
+.su-step.su-skipped .su-step-title, .su-step.su-skipped .su-summary { color: var(--text-muted); }
+.su-step-head { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.su-step-title {
+  font-family: var(--font-heading); font-weight: var(--font-heading-weight); font-size: 15px;
+  color: var(--text-primary); min-width: 0;
+}
+.su-req { font-size: var(--fs-xs); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); }
+
+.su-pill {
+  display: inline-flex; align-items: center;
+  padding: 1px 7px; border-radius: 5px;
+  font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  line-height: 16px; white-space: nowrap;
+  color: var(--text-secondary); background: var(--fill-2);
+}
+.su-pill-done { color: var(--ok); background: var(--ok-bg); }
+.su-pill-restart { color: var(--warn); background: var(--warn-bg); }
+.su-pill-skipped { color: var(--text-muted); background: var(--fill-1); border: 1px dashed var(--border-strong); }
+.su-pill-todo { color: var(--info); background: var(--info-bg); }
+
+.su-summary { font-size: var(--fs-md); line-height: 1.45; color: var(--text-body); }
+.su-detail { font-size: var(--fs-sm); line-height: 1.5; color: var(--text-muted); }
+
+.su-action { margin-top: var(--space-2); min-width: 0; }
+.su-action:empty { display: none; }
+.su-kv {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px var(--space-4);
+  font-family: var(--font-mono); font-size: 11.5px; line-height: 1.5;
+}
+.su-kv dt { color: var(--text-muted); text-transform: uppercase; letter-spacing: .06em; font-size: 10.5px; }
+.su-kv dd { color: var(--text-body); overflow-wrap: anywhere; }
+
+.su-form { display: flex; flex-direction: column; gap: var(--space-3); align-items: flex-start; }
+.su-field { display: flex; flex-direction: column; gap: 5px; width: 100%; max-width: 560px; }
+.su-label { font-size: var(--fs-sm); font-weight: 500; color: var(--text-secondary); }
+.su-paths { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.5; resize: vertical; min-height: 68px; }
+.su-hint { font-size: var(--fs-xs); line-height: 1.45; color: var(--text-muted); }
+.su-choice { gap: var(--space-2); }
+.su-opt {
+  display: flex; align-items: flex-start; gap: var(--space-3); width: 100%; max-width: 560px;
+  padding: 8px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  background: var(--surface-2); cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.su-opt:hover { border-color: var(--border-strong); background: var(--fill-1); }
+.su-opt input { margin: 3px 0 0; accent-color: var(--accent); flex: none; }
+.su-opt-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.su-opt-text strong { font-size: 13px; font-weight: 500; color: var(--text-primary); }
+.su-form > .btn { margin-top: var(--space-1); }
+
+.su-msg {
+  display: flex; align-items: center; gap: 6px;
+  font-size: var(--fs-sm); line-height: 1.45;
+}
+.su-msg > i { font-size: 14px; flex: none; }
+.su-msg.ok { color: var(--ok); }
+.su-msg.bad { color: var(--crit); }
+
+.su-foot {
+  display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+  margin-top: var(--space-2); padding-top: var(--space-3);
+  border-top: 1px solid var(--fill-2);
+}
+.su-cmd {
+  display: flex; align-items: center; gap: var(--space-2); min-width: 0; max-width: 100%;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--border-subtle); border-radius: var(--radius-sm);
+  background: var(--fill-1);
+}
+.su-cmd code {
+  font-family: var(--font-mono); font-size: 11.5px; color: var(--text-secondary);
+  min-width: 0; overflow-wrap: anywhere;
+}
+.su-copy.icon-btn { width: 26px; height: 26px; font-size: 14px; flex: none; }
+.su-skip {
+  padding: 4px 8px; border: 0; border-radius: var(--radius-sm); background: transparent;
+  font: inherit; font-size: var(--fs-sm); font-weight: 500; color: var(--text-secondary);
+  cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+  text-decoration-color: var(--border-strong);
+  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease);
+}
+.su-skip:hover:not(:disabled) { color: var(--text-primary); background: var(--fill-2); }
+.su-skip.quiet { color: var(--text-muted); font-size: var(--fs-xs); }
+.su-skip:disabled { opacity: .45; cursor: not-allowed; }
+.su-error { display: flex; flex-direction: column; gap: var(--space-2); align-items: flex-start; padding: var(--space-4) 0; }
+
+/* The way back in from the Control plane's System tab once the rail entry is gone. */
+.su-again { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) 0 0; }
+.su-again .sub { font-family: var(--font-mono); font-size: 11.5px; color: var(--text-muted); }
+
+/* Collapsed rail: the fraction is wider than a count, so it shrinks to stay a corner
+ * mark rather than a bar across the icon. */
+@media (max-width: 760px) {
+  .mode-count.su-count { top: 2px; right: 2px; padding: 0 3px; font-size: 9px; line-height: 13px; min-width: 0; }
+}
+@media (max-width: 620px) {
+  .su-wrap { padding: var(--space-4) 16px 48px; }
+  .su-step { padding: var(--space-3) var(--space-4); }
+  .su-head-acts { margin-left: 0; }
+}

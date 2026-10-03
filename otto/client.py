@@ -57,6 +57,15 @@ class Client:
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/api/health")
 
+    # ---- setup (otto/setup.py) ----------------------------------------------
+
+    def setup_view(self) -> dict[str, Any]:
+        return self._request("GET", "/api/setup")
+
+    def setup_post(self, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
+        """One of the /api/setup/* actions, or /api/daemon/restart."""
+        return self._request("POST", path, json=body or {})
+
     def state(self) -> dict[str, Any]:
         return self._request("GET", "/api/state")
 
