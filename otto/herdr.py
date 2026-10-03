@@ -132,7 +132,20 @@ def snapshot() -> dict[str, Any] | None:
 
 
 def server_running() -> bool:
-    return snapshot() is not None
+    return available() and snapshot() is not None
+
+
+def snapshot_or_none() -> dict[str, Any] | None:
+    """snapshot() for read paths that must work on a machine without herdr.
+
+    snapshot() raises not_installed on purpose so a caller that needs herdr
+    (start a pane, prompt an agent) fails loudly. The read side of the dashboard
+    is the opposite case: no herdr means an empty rail, not a 500. Found by CI on
+    a runner without herdr, 2026-10-02: GET /api/state raised from logistics.view.
+    """
+    if not available():
+        return None
+    return snapshot()
 
 
 # Variables a Claude Code tool shell sets on everything it runs. A herdr server
@@ -185,17 +198,17 @@ def ensure_server(wait: float = 8.0) -> tuple[bool, str]:
 # ---- reads -------------------------------------------------------------------
 
 def agents(snap: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    snap = snap if snap is not None else snapshot()
+    snap = snap if snap is not None else snapshot_or_none()
     return list((snap or {}).get("agents") or [])
 
 
 def panes(snap: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    snap = snap if snap is not None else snapshot()
+    snap = snap if snap is not None else snapshot_or_none()
     return list((snap or {}).get("panes") or [])
 
 
 def workspaces(snap: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    snap = snap if snap is not None else snapshot()
+    snap = snap if snap is not None else snapshot_or_none()
     return list((snap or {}).get("workspaces") or [])
 
 
@@ -643,7 +656,7 @@ def last_snapshot(max_age: float = 30.0) -> dict[str, Any] | None:
     snap, at = _last
     if snap is not None and time.time() - at <= max_age:
         return snap
-    snap = snapshot()
+    snap = snapshot_or_none()
     _remember(snap)
     return snap
 
