@@ -238,13 +238,24 @@ let renderDeferred = false;
  * is followed by mouseup and click in the same task, and a synchronous rebuild
  * on pointerup would destroy the node before its click could dispatch. */
 let pointerHeld = false;
-document.addEventListener("pointerdown", () => { pointerHeld = true; }, true);
+let pointerHeldTimer = null;
+document.addEventListener("pointerdown", () => {
+  pointerHeld = true;
+  /* A watchdog, because the release is not guaranteed to arrive: an HTML5 drag
+   * swallows the mouse-up it started with, a pointer that leaves the window can
+   * come up anywhere, and a frozen "held" flag deferred every render forever.
+   * No click takes four seconds, so after four the hold is treated as over. */
+  clearTimeout(pointerHeldTimer);
+  pointerHeldTimer = setTimeout(pointerReleased, 4000);
+}, true);
 function pointerReleased() {
+  clearTimeout(pointerHeldTimer);
   pointerHeld = false;
   if (renderDeferred) setTimeout(() => { if (renderDeferred && !pointerHeld) render(true); }, 0);
 }
-document.addEventListener("pointerup", pointerReleased, true);
-document.addEventListener("pointercancel", pointerReleased, true);
+for (const ev of ["pointerup", "pointercancel", "dragend", "drop", "mouseup"]) {
+  document.addEventListener(ev, pointerReleased, true);
+}
 window.addEventListener("blur", pointerReleased);
 /* Terminal views (term.js). The focused herdr target and the control/observe mode
  * persist, so the pane you were watching is the pane you come back to. */

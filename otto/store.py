@@ -84,7 +84,18 @@ def _atomic_write(path: Path, text: str) -> None:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        # Windows refuses to replace a file another handle has open, and readers
+        # (an API request, a CLI, the desktop app) open these files without the
+        # writer's lock on purpose. A read lasts microseconds, so a short retry
+        # turns "Access is denied" from a lost write into a 25ms delay.
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.025)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise

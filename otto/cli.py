@@ -2924,6 +2924,15 @@ def cmd_ensure(args, client: Client) -> int:
     creation = 0x00000200 | 0x08000000 if sys.platform == "win32" else 0
     log = config.LOG_DIR / "daemon.out.log"
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    # Rotate on start, keeping one generation. The log is uvicorn's stdout and
+    # every traceback the daemon prints; left alone it grows without bound.
+    try:
+        if log.exists() and log.stat().st_size > 20 * 1024 * 1024:
+            prev = log.with_name("daemon.out.1.log")
+            prev.unlink(missing_ok=True)
+            log.rename(prev)
+    except OSError:
+        pass  # a rotation that cannot happen is not a reason to keep the daemon down
     fh = log.open("a", encoding="utf-8", errors="replace")
     # The daemon outlives this shell and everything it spawns inherits from it.
     # Started from a Claude Code tool shell it would carry NO_COLOR and
