@@ -1,0 +1,183 @@
+# The single Slack app behind everything Otto does in Slack.
+#
+# Paste into https://api.slack.com/apps -> your app -> App Manifest, then reinstall.
+#
+# ONE APP, TWO TOKENS
+# Installing this issues two separate credentials, and the split between them is the
+# security boundary that matters:
+#
+#   user token  (xoxp-)  READS the owner's DMs and group DMs, and writes NOTHING. Acts
+#                        as the owner, because a bot can only see conversations it was
+#                        added to and therefore cannot read their 1:1s with other people.
+#   bot token   (xoxb-)  WRITES as Otto, and reads only where Otto itself is: the
+#                        channels it was invited to, and its own DMs.
+#
+# They are distinct secrets, registered separately in your credential store and
+# checked out separately. That property comes from the SCOPE SPLIT, not from using two apps - an
+# earlier draft of this file used two apps and claimed otherwise, which overstated
+# what the split bought.
+#
+# The bot did once hold no read scope at all, and this comment said so long enough to
+# be worth flagging: it kept claiming "the speaker cannot read" after the summon
+# poller and the DM inbox had both been added. A comment that contradicts the scope
+# list below is worse than no comment, because the list is checked and the prose is
+# believed. The line that still holds is narrower and worth stating exactly: NEITHER
+# TOKEN CAN DO THE OTHER'S JOB. The bot cannot read the owner's conversations with
+# other people; the user token cannot say anything to anyone.
+#
+# What a single app does mean, honestly: uninstalling revokes both sides at once,
+# and one app config is one place where a scope added to either side goes unnoticed.
+# Individual tokens can still be revoked independently via auth.revoke.
+#
+# REINSTALLING REISSUES TOKENS. Any scope change here requires a reinstall, and a
+# reinstall issues new tokens. Both credential-store entries must be updated and
+# re-verified afterwards, or Otto silently authenticates with a dead credential. Run
+# each verifier with the token injected into its environment by your secrets CLI, so
+# the value never touches a file or a shell history:
+#
+#   <secrets-cli> run --with SLACK_USER_TOKEN=<user-token-id> -- python producers\\slack_dm_verify.py
+#   <secrets-cli> run --with SLACK_BOT_TOKEN=<bot-token-id>   -- python producers\\slack_bot_verify.py
+
+display_information:
+  # This name is what the whole company reads on every message Otto sends. It is the app's
+  # user-facing identity, not a description of the sweep, which is why it is not
+  # called "Otto DM Sweep": the read side displays no name anywhere.
+  name: Otto
+  description: <OWNER NAME>'s ops assistant. Reads their DMs for follow-ups, and sends as itself.
+  long_description: >-
+    Otto is the personal operations assistant for <OWNER NAME> at <COMPANY>. It
+    reads <OWNER NAME>'s direct messages so that work assigned to them in
+    conversation is tracked rather than remembered, and it sends reminders and
+    replies under its own name so that automated messages are clearly attributable
+    to an automation rather than appearing to come from <OWNER NAME> personally.
+    When Otto messages a colleague it opens a group conversation including
+    <OWNER NAME>, so the person can see who it works for and <OWNER NAME> can
+    correct it in place. Message content is processed on <OWNER NAME>'s
+    workstation and is not sent anywhere else.
+  background_color: "#1f2429"
+
+features:
+  # WITHOUT THIS BLOCK YOU CANNOT TYPE TO OTTO.
+  #
+  # Slack defaults a bot's Messages tab to read-only, so the DM shows "Sending
+  # messages to this app has been turned off" and there is no compose box. That is a
+  # separate switch from any scope: `im:history` lets Otto READ its own DMs, and this
+  # is what lets a human WRITE into them. Granting the scope without this gets you an
+  # inbox nobody can post to, which is exactly what the first install produced.
+  app_home:
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+    # No Home tab: Otto has a dashboard and a tray icon already, and an empty Home
+    # tab is a blank panel people click once and never again.
+    home_tab_enabled: false
+
+  bot_user:
+    display_name: Otto
+    always_online: true
+
+oauth_config:
+  scopes:
+    # ---- READ: acts as the owner. No write capability. ---------------------
+    user:
+      - im:read        # enumerate 1:1 DM channels
+      - im:history     # read messages in those DMs
+      - mpim:read      # enumerate group DMs
+      - mpim:history   # read messages in group DMs, incl. Otto's own group threads
+      - users:read     # resolve user ids to display names
+
+    # ---- WRITE, plus read of the channels it was invited to ----------------
+    bot:
+      - chat:write          # post messages, including thread replies
+      - im:write            # open a DM channel with a person
+      - mpim:write          # open a GROUP DM (Otto + owner + recipient). See below.
+      - users:read          # resolve a person to a Slack user id
+      - users:read.email    # Otto's people records key on work email, not slack id
+      - channels:history    # see the summon reaction. Scoped by invite - see below.
+      - im:history          # read Otto's OWN DMs, so the owner can instruct it from a phone
+      - reactions:read      # belt and braces alongside channels:history
+
+    # WHY THE BOT READS AND NOT THE USER TOKEN
+    #
+    # Added so the daemon can notice a :otto-help: reaction within a minute instead
+    # of at the next four-hourly sweep. Something has to read the help channel to
+    # see the reaction, and the choice of WHICH token is the whole security
+    # question:
+    #
+    #   user token + channels:history  reads EVERY public channel the owner can see.
+    #   bot token  + channels:history  reads ONLY channels the bot was invited to.
+    #
+    # A bot cannot see a channel it is not a member of, so this scope is bounded by
+    # `/invite @Otto` rather than by the scope name. That should be the help channel
+    # alone (the one `OTTO_HELP_CHANNEL` names in otto/config.py).
+    # Revoking it is `/kick`, visible in the channel, available to anyone in it.
+    #
+    # This does cost the clean property the earlier revision had ("the bot holds no
+    # read scope at all"). That property was a nice sentence, not the goal. The goal
+    # is the smallest reachable surface per credential, and one invited channel is a
+    # great deal smaller than every public channel in the workspace.
+    #
+    # It also makes the summon gate ENFORCEABLE. Until now "only answer when
+    # summoned" was prose in a command file that a model could be talked out of, and
+    # it was the weakest interlock in Otto. With the daemon reading the reaction and
+    # handing the session one specific thread, the session never decides whether it
+    # was summoned at all.
+
+    # WHY im:history - so the owner can instruct Otto from a phone
+    #
+    # Otto could speak in Slack and could not listen, which made it a thing you
+    # configure from a terminal. The moments worth capturing happen away from the
+    # desk: a problem gets resolved on a voice call and nothing about it reaches
+    # Otto, because reaching Otto meant opening a laptop.
+    #
+    # On the BOT this reads only conversations Otto is in, which is its own DMs. The
+    # same scope on the owner's user token reads every DM they have with anybody.
+    # Identical name, nothing like the same reach. Acting only on the owner's
+    # messages is enforced in Python (otto/inbox.py), not asked for in a prompt.
+
+    # DELIBERATELY ABSENT from the bot side:
+    #
+    #   chat:write.public   would let Otto post in any public channel without being
+    #                       invited. Without it, channel access is an invite that is
+    #                       visible in Slack's own UI and revocable by anyone in the
+    #                       channel. To let Otto answer in the help channel: /invite @Otto
+    #   channels:read       Otto needs no channel directory: it is told which channel
+    #                       to watch, and cannot enumerate the workspace.
+    #   files:read          DM attachments are not what this reads.
+    #   groups:history      private channels are not a surface Otto works on.
+    #   chat:write.customize  Otto should not be able to change the name it posts under.
+    #
+    # WHY mpim:write - Otto talks to colleagues in a group DM, not a 1:1
+    #
+    # When Otto messages a colleague it opens a group DM containing Otto, the owner,
+    # and that person, rather than a private 1:1 plus a separate report to the owner
+    # afterwards. Four things follow, and the third decided it:
+    #
+    #   1. The owner sees the REPLY, not just what Otto said. A report of outbound
+    #      messages is write-only visibility; the conversation is the whole exchange.
+    #   2. The owner can correct in place, in the conversation the person is actually
+    #      reading, instead of reading a report and then going to find the thread.
+    #   3. The recipient can SEE that the owner is present. A bot messaging you about
+    #      your laptop is much easier to trust when the human it works for is visibly
+    #      in the room. A silent 1:1 from an automation invites "does the owner know
+    #      about this?", and that answer should be visible rather than asserted.
+    #   4. Reading the replies needs no new scope: the owner is a member, so the user
+    #      token above already sees the conversation via mpim:history.
+    #
+    # This does NOT cover every surface. A reply in a public help-channel thread
+    # cannot be a group DM, so that surface reports to the owner separately. The two
+    # cover disjoint surfaces rather than duplicating each other.
+
+settings:
+  # Otto is not interactive and Slack never needs to reach this machine: the daemon
+  # posts outbound and polls inbound on its own cadence. No Request URL, no socket,
+  # no NAT hole.
+  #
+  # `event_subscriptions` is OMITTED rather than set empty. In a manifest the
+  # PRESENCE of that key requests event delivery and then fails validation with
+  # "requires a Request URL" / "requires Socket Mode if no Request URL is provided".
+  # Absence is how you decline. (Learned the hard way.)
+  interactivity:
+    is_enabled: false
+  socket_mode_enabled: false
+  org_deploy_enabled: false
+  token_rotation_enabled: false

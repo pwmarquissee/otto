@@ -1,0 +1,23 @@
+# Daemon tests and the release guard. The desktop shell (desktop/, Tauri + Rust)
+# is not built in CI; it is Windows only and needs the MSVC toolchain and WebView2.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - run: python scripts/oss_scan.py

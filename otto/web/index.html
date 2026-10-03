@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Otto</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <!-- Phosphor, as the design specifies. If it fails to load the icons collapse to
+       nothing rather than tofu; every one of them sits beside a text label. -->
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <!-- ══════════════════════════ rail ══════════════════════════ -->
+  <aside class="rail">
+    <div class="rail-brand">
+      <span class="rail-mark">O</span>
+      <span class="rail-name" id="persona">Otto</span>
+    </div>
+
+    <nav class="rail-nav" id="rail-nav"></nav>
+
+    <div class="rail-foot">
+      <button type="button" class="scope-btn" id="scope-btn" title="Open Otto in a repository (Ctrl+O)">
+        <i class="ph ph-folder-open"></i>
+        <span class="lbl" id="scope-label">All roots</span>
+        <span class="kbd">^O</span>
+      </button>
+
+      <div class="domain-seg" id="domain-seg"></div>
+
+      <div class="daemon-chip" id="daemon-chip" title="single writer">
+        <span class="daemon-dot"></span>
+        <span class="lbl" id="daemon-text">daemon up</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ══════════════════════════ body ══════════════════════════ -->
+  <div class="body">
+
+    <header class="topbar">
+      <div class="topbar-head">
+        <h1 class="mode-title" id="mode-title">Stream</h1>
+        <p class="state-line" id="state-line">reading state…</p>
+      </div>
+      <span class="scope-chip" id="scope-chip" hidden>
+        <i class="ph ph-folder-open"></i>
+        <span id="scope-chip-path"></span>
+        <button type="button" id="scope-clear" title="Leave this repository"><i class="ph ph-x"></i></button>
+      </span>
+      <!-- Selection is shell state. Pick a person once and every view that knows about
+           people (Board, Threads, Outreach, People) keeps them in focus until cleared. -->
+      <span class="scope-chip person-chip" id="person-chip" hidden>
+        <i class="ph ph-user-focus"></i>
+        <span id="person-chip-name"></span>
+        <button type="button" id="person-clear" title="Stop focusing on this person"><i class="ph ph-x"></i></button>
+      </span>
+      <span class="spacer"></span>
+      <button type="button" class="palette-btn" id="palette-btn">
+        <i class="ph ph-magnifying-glass"></i>
+        <span>Run a command</span>
+        <span class="kbd">^K</span>
+      </button>
+      <button type="button" class="icon-btn" id="split-btn" title="Split the workspace (Ctrl+\)">
+        <i class="ph ph-columns"></i>
+      </button>
+      <span id="top-actions"></span>
+    </header>
+
+    <!-- The shell owns connection state. One banner, above every view, that says how
+         old the numbers below it are. Views never render their own "unreachable". -->
+    <div class="conn-banner" id="conn-banner" hidden>
+      <i class="ph ph-plugs"></i>
+      <span id="conn-text"></span>
+      <span class="spacer"></span>
+      <button type="button" class="cmd-btn" id="conn-cmd">otto serve</button>
+    </div>
+
+    <div class="split" id="split">
+      <main class="centre" id="centre"></main>
+      <main class="centre pane2" id="centre2" hidden></main>
+      <aside class="inspector" id="inspector" data-idle="1"></aside>
+    </div>
+
+    <!-- Status bar: the otto command your last click was worth. How the UI teaches the
+         CLI, one string at a time. -->
+    <footer class="echo-bar" id="echo-bar">
+      <span class="echo-mark">›</span>
+      <button type="button" class="echo-cmd" id="echo-cmd" title="copy">otto status</button>
+      <span class="echo-note" id="echo-note">the command your last click was worth</span>
+      <span class="spacer"></span>
+      <span class="echo-right" id="echo-right"></span>
+    </footer>
+  </div>
+
+  <!-- ══════════════════════════ repository picker ══════════════════════════ -->
+  <div class="overlay scope-o" id="scope-overlay" hidden>
+    <div class="sheet scope-s" id="scope-sheet">
+      <div class="sheet-head no-rule">
+        <i class="ph ph-folder-open"></i>
+        <input id="scope-q" placeholder="Open Otto in a repository…" autocomplete="off">
+        <span class="sheet-esc">esc</span>
+      </div>
+      <p class="sheet-lede">
+        Scoping filters every view to work that happened in that directory. Domain is
+        still derived from the root, so a repo can never disagree with its domain.
+      </p>
+      <div class="sheet-list ruled" id="scope-list"></div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════ command palette ══════════════════════════ -->
+  <div class="overlay palette-o" id="palette-overlay" hidden>
+    <div class="sheet palette-s" id="palette-sheet">
+      <div class="sheet-head">
+        <i class="ph ph-terminal-window"></i>
+        <input id="palette-q" placeholder="Every command Otto actually has. Nothing invented." autocomplete="off">
+        <span class="sheet-esc">esc</span>
+      </div>
+      <div class="sheet-list" id="palette-list"></div>
+      <div class="sheet-foot">
+        <span>↑↓ move</span><span>↵ copy or open</span><span>^\ split</span><span>^1 ^2 focus a pane</span><span>esc</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════ what is this ══════════════════════════ -->
+  <div class="overlay cover-o" id="cover-overlay" hidden>
+    <div class="sheet cover-s" id="cover-sheet">
+      <button type="button" class="insp-x cover-x" id="cover-x" title="Close (esc)"><i class="ph ph-x"></i></button>
+      <div class="cover-kicker">For the person who runs the whole IT function alone. Why this exists.</div>
+      <h2 class="cover-title">EYES ON EVERYTHING<br><span>THAT RUNS WITHOUT YOU</span></h2>
+      <p class="cover-p">
+        A daemon owns the state, this dashboard shows it, an <code>otto</code> CLI drives it, and
+        one persona fronts all of it. Otto does not replace the skills and commands in
+        <code>~/.claude</code>; it makes them visible, schedulable, and accountable.
+      </p>
+      <div class="cover-points">
+        <div class="cover-pt"><span class="n">01</span><span><b>An alert is not a gap.</b> An alert is something that broke while Otto was watching it. A gap is something nothing was ever watching. A stale schedule is the first; a schedule with no staleness alarm is the second, and that is the class of problem you cannot notice by looking harder.</span></div>
+        <div class="cover-pt"><span class="n">02</span><span><b>"Otto broke" never looks like "the work failed".</b> Every run carries two lanes: OTTO (spawned, ran, reported) and WORK (what the session concluded). A 529 from upstream and a session that genuinely could not do the task are both red in the naive reading, and that reading has cost real money.</span></div>
+        <div class="cover-pt"><span class="n">03</span><span><b>Silence sends, and the clock is visible.</b> A message Otto wants to send a colleague is held, shown in full with its reason, and goes out only if you say nothing. The countdown is the loudest thing on the card.</span></div>
+        <div class="cover-pt"><span class="n">04</span><span><b>Every click teaches the CLI.</b> The bar at the bottom shows the <code>otto</code> command your last click was worth. Copy it. The dashboard is a way in, not the only door.</span></div>
+      </div>
+      <div class="cover-foot">
+        <button type="button" class="btn btn-primary" id="cover-go">Open Otto <i class="ph ph-arrow-right"></i></button>
+        <span class="cover-hint">^K opens the palette · ^\ splits the workspace · reopen this from ^K → "What is this?"</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════ action modal ══════════════════════════ -->
+  <div class="overlay action-o" id="action-overlay" hidden>
+    <div class="sheet action-s" id="action-sheet">
+      <div class="action-head">
+        <div class="action-tags" id="action-tags"></div>
+        <h2 id="action-title"></h2>
+        <button type="button" class="insp-x" id="action-x" title="Close (esc)">
+          <i class="ph ph-x"></i>
+        </button>
+      </div>
+
+      <div class="action-body">
+        <div class="callout tight" id="action-error" hidden>
+          <strong class="sm">Last attempt did not succeed</strong>
+          <span class="mono" id="action-error-text"></span>
+        </div>
+        <div class="action-why" id="action-why"></div>
+
+        <label class="fld">
+          <span class="fld-lbl">Additional context</span>
+          <textarea id="action-ctx" class="input" rows="5"
+            placeholder="What Otto does not already know. Constraints, the person involved, what you already tried, where to look."></textarea>
+        </label>
+
+        <div class="action-opts">
+          <label class="fld">
+            <span class="fld-lbl">Agent</span>
+            <select id="action-agent" class="input"></select>
+          </label>
+          <label class="fld">
+            <span class="fld-lbl">Working directory</span>
+            <input id="action-cwd" class="input" spellcheck="false">
+          </label>
+        </div>
+
+        <div class="action-preview">
+          <div class="action-preview-head">
+            <span id="action-plan-label">What this will do</span>
+            <button type="button" class="cmd-btn" id="action-copy">Copy prompt</button>
+          </div>
+          <pre class="action-prompt" id="action-prompt"></pre>
+        </div>
+      </div>
+
+      <div class="action-foot">
+        <span class="action-note" id="action-note"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-secondary btn-sm" id="action-details" hidden>Details</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="action-cancel">Cancel</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="action-run">
+          <i class="ph ph-lightning"></i><span>Run now</span>
+        </button>
+        <button type="button" class="btn btn-primary btn-sm" id="action-queue">
+          <i class="ph ph-paper-plane-right"></i><span>Send to Otto</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- A card's reply box. Where a due toast's Reply button lands (#reply=<id>), and
+       what "Tell Otto" on a card menu or a notice opens. Quick answers PATCH the card
+       with no model; free text goes to a small /otto-card session that decides what
+       follows and sends a receipt notice. -->
+  <div class="overlay reply-o" id="reply-overlay" hidden>
+    <div class="sheet reply-s" id="reply-sheet">
+      <div class="action-head">
+        <div class="action-tags" id="reply-tags"></div>
+        <h2 id="reply-title"></h2>
+        <button type="button" class="insp-x" id="reply-x" title="Close (esc)">
+          <i class="ph ph-x"></i>
+        </button>
+      </div>
+
+      <div class="action-body">
+        <div class="action-why" id="reply-why"></div>
+
+        <div class="reply-quick" id="reply-quick"></div>
+
+        <label class="fld">
+          <span class="fld-lbl">Or tell Otto what changed</span>
+          <textarea id="reply-text" class="input" rows="4"
+            placeholder="&quot;done, legal signed off&quot; · &quot;push to next friday&quot; · &quot;blocked on the vendor&quot; · &quot;scope grew, it's the whole launcher config now&quot; · or ask what you should do next"></textarea>
+        </label>
+      </div>
+
+      <div class="action-foot">
+        <span class="action-note" id="reply-note">Free text goes to a small Otto session that updates the card or files what follows, then sends you a receipt. Quick buttons change the card directly.</span>
+        <span class="spacer"></span>
+        <button type="button" class="btn btn-secondary btn-sm" id="reply-cancel">Cancel</button>
+        <button type="button" class="btn btn-primary btn-sm" id="reply-send">
+          <i class="ph ph-paper-plane-right"></i><span>Tell Otto</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay person-o" id="person-overlay" hidden>
+    <div class="sheet person-s" id="person-sheet">
+      <div class="action-head">
+        <div class="action-tags" id="person-tags"></div>
+        <h2 id="person-title"></h2>
+        <button type="button" class="insp-x" id="person-x" title="Close (esc)">
+          <i class="ph ph-x"></i>
+        </button>
+      </div>
+      <div class="action-body person-body" id="person-body"></div>
+      <div class="person-foot">
+        <button type="button" class="btn btn-secondary btn-xs" id="person-focus">
+          <i class="ph ph-user-focus"></i><span>Focus everywhere</span>
+        </button>
+        <span class="spacer"></span>
+        <span class="dim sm" id="person-path"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="overlay notice-o" id="notice-overlay" hidden>
+    <div class="sheet notice-s" id="notice-sheet">
+      <div class="action-head">
+        <div class="action-tags" id="notice-tags"></div>
+        <h2 id="notice-title"></h2>
+        <button type="button" class="insp-x" id="notice-x" title="Close (esc)">
+          <i class="ph ph-x"></i>
+        </button>
+      </div>
+      <div class="action-body notice-full" id="notice-full"></div>
+      <div class="notice-foot" id="notice-foot"></div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden>
+    <i class="ph ph-check"></i><span id="toast-text"></span>
+  </div>
+</div>
+
+<!-- xterm.js, vendored (otto/web/vendor/README.md). term.js owns the live herdr
+     panes and must load before app.js, which mounts them into its views. -->
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/addon-fit.js"></script>
+<script src="/static/vendor/addon-webgl.js"></script>
+<script src="/static/term.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

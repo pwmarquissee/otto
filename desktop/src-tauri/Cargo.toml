@@ -1,0 +1,25 @@
+[package]
+name = "otto-desktop"
+version = "0.1.0"
+edition = "2021"
+description = "Otto, in a window and in the tray"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-autostart = "2"
+# otto:// links. A due toast's Reply button has to land in THIS window, not in
+# whatever browser owns http://. single-instance forwards a second launch's argv
+# (the URL Windows hands us) to the running app instead of opening a second one.
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+serde_json = "1"
+ureq = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

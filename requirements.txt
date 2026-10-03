@@ -1,0 +1,8 @@
+# All of these were already present in the environment Otto targets.
+# Pinned to lower bounds rather than exact versions so Otto does not fight
+# whatever else is installed alongside it.
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.6
+psutil>=5.9
+requests>=2.31

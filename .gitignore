@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime state never lives in the repo; it lives under OTTO_HOME (~/.claude/otto).
+state/
+logs/
+*.log
+*.corrupt
+*.pid
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Desktop shell build output (reproducible from Cargo.lock)
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
+
+# JavaScript tooling, if any is ever added
+node_modules/
+
+# Scratch and temporary files
+tmp/
+tmp_*
+.tmp_*
+scratch/
+scratchpad/
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
