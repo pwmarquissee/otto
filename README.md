@@ -46,7 +46,7 @@ sees the whole old file or the whole new one.
 ## Screenshots
 
 Taken from a public build running against synthetic data (two scratch herdr panes, an
-invented board). Dark theme is the only theme.
+invented board). The dashboard is dark by default and follows a light OS theme.
 
 ![Today](docs/screenshots/today.png)
 
@@ -194,6 +194,19 @@ Two kinds of card live on the board. **Stored** cards are the ones you or an age
 created; they have an identity and drag between columns. **Derived** cards are
 computed from live state on every request (a stale schedule, an orphaned run, a down
 integration) and are not draggable: you fix the condition and the card disappears.
+
+### How it stays fast
+
+The dashboard is push-driven. It holds one WebSocket, `/ws/events`, that announces
+when the daemon's store version moves, then fetches `/api/state` with the ETag it
+already has; a slow timer poll is only the safety net for a missed message. Unchanged state is a bodyless 304. The payload is computed once
+per store version, gzipped once, and served from cache until something changes, so a
+daemon with hundreds of cards answers in single-digit milliseconds. Long card text
+is cut to a preview in the list payload and fetched in full only when a card is
+opened. On the browser side, columns virtualize past forty cards, clocks update in
+place instead of re-rendering, and the terminal view draws through WebGL. The
+contract and the measurements are in
+[docs/control-room/performance.md](docs/control-room/performance.md).
 
 ## How runs and dispatch work
 

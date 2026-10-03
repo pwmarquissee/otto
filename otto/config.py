@@ -221,6 +221,29 @@ RUN_HISTORY_LIMIT = 500
 EVENT_HISTORY_LIMIT = 2000
 SESSION_LIMIT = 200
 
+# ---- dashboard state payload -------------------------------------------------
+# GET /api/state is what the dashboard polls, and on a board of several hundred
+# cards it runs to megabytes, most of it the task list and most of that `detail`.
+# The payload is computed once per store version (store.version, bumped by every
+# write) and served from cache while nothing changes; STATE_IDLE_CACHE_SECONDS
+# bounds how long the clock-driven fields (due flags, machine snapshot, live
+# sessions) may lag while the store is quiet. A write invalidates the cache at once.
+STATE_IDLE_CACHE_SECONDS = float(os.environ.get("OTTO_STATE_IDLE_CACHE", "10"))
+# Task `detail` in the state payload is cut to this many characters and flagged
+# `detail_truncated: true`; the card clamps to three lines so the rest is never
+# drawn. GET /api/tasks/{id} returns the full task for the inspector.
+STATE_DETAIL_CHARS = int(os.environ.get("OTTO_STATE_DETAIL_CHARS", "600"))
+# How many runs and events ride in the payload. The dashboard renders every run
+# it is handed (grouped by day) and slices events at 60, so these match what it
+# shows rather than trimming history out from under it.
+STATE_RUNS = int(os.environ.get("OTTO_STATE_RUNS", "80"))
+STATE_EVENTS = int(os.environ.get("OTTO_STATE_EVENTS", "60"))
+# WebSocket /ws/events (otto/web_events.py): how often the socket checks
+# store.version, and how often it pings an idle socket so proxies and the browser
+# keep it open.
+WS_EVENTS_POLL_SECONDS = float(os.environ.get("OTTO_WS_EVENTS_POLL", "0.25"))
+WS_EVENTS_PING_SECONDS = float(os.environ.get("OTTO_WS_EVENTS_PING", "25"))
+
 # ---- sessions ----------------------------------------------------------------
 # Live Claude Code session state, reported by hooks (see otto/sessions.py).
 #

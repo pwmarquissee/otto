@@ -153,7 +153,7 @@ def cmd_status(args, client: Client) -> int:
                   f"{_age(r['started']):>11}{usage}")
         print()
 
-    _print_sessions(st.get("sessions") or {})
+    _print_sessions_line(st.get("sessions") or {})
     _print_snapshots(st.get("snapshots") or {})
 
     if not only or only == "work":
@@ -177,7 +177,7 @@ def cmd_status(args, client: Client) -> int:
     return 0
 
 
-def _print_sessions(data: dict) -> None:
+def _print_sessions_line(data: dict) -> None:
     """One line, and only when there is something to say.
 
     Deliberately not a list. `otto status` is the one-screen view, waiting sessions

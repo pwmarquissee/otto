@@ -121,6 +121,23 @@ class Store:
         # Same argument for telemetry: an append per export batch from every live
         # session, no compound mutation, so it must not queue behind a tick.
         self.telemetry_lock = threading.Lock()
+        # Change counter for everything a dashboard can see. Every state write
+        # (`_write`) and every event append bumps it; /api/state caches its
+        # payload per version and /ws/events tells the browser when it moved, so
+        # the dashboard fetches on change instead of re-pulling megabytes on a
+        # timer. Telemetry appends do NOT bump it: nothing in the state payload
+        # reads telemetry, and a bump per export batch from every live session
+        # would invalidate the cache every few seconds for no visible change.
+        # Process-local: it restarts at 0 with the daemon, and the socket's hello
+        # carries the current value so a reconnecting client resyncs.
+        self.version = 0
+        self.version_at = 0.0
+        self._version_lock = threading.Lock()
+
+    def _bump(self) -> None:
+        with self._version_lock:
+            self.version += 1
+            self.version_at = time.time()
 
     # ---- raw json -----------------------------------------------------------
 
@@ -193,6 +210,7 @@ class Store:
                 "Use the HTTP API (otto CLI) instead."
             )
         _atomic_write(self._path(name), json.dumps(data, indent=2) + "\n")
+        self._bump()
 
     # ---- runs ---------------------------------------------------------------
 
@@ -804,6 +822,7 @@ class Store:
         p.parent.mkdir(parents=True, exist_ok=True)
         with self.lock, p.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(json.dumps(event.model_dump()) + "\n")
+        self._bump()
 
     def log(self, message: str, level: str = "info", source: str = "otto", **data: Any) -> None:
         self.append_event(Event(level=level, source=source, message=message, data=data))

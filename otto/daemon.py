@@ -12,6 +12,9 @@ trip to an external API must not stall the dashboard.
 from __future__ import annotations
 
 import contextlib
+import gzip
+import hashlib
+import json
 import threading
 import time
 import uuid
@@ -23,9 +26,11 @@ from typing import Any, Literal
 import psutil
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, field_validator
+from starlette.middleware.gzip import GZipMiddleware
 
 from . import (activity, advisor, board, chat, config, configsync, decisions, dedupe,
                dispatch, feeds, findings, herdr, journal, known, launch, ledger, logistics,
@@ -815,6 +820,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=f"{config.PERSONA_NAME} - {config.PERSONA_BLURB}", lifespan=lifespan)
+# Compress JSON bodies over 1 KB for clients that accept gzip. Added before the
+# guard on purpose: add_middleware wraps outward, so this stays INSIDE OriginGuard
+# and a refused request is still answered by the guard alone. Level 6 is within
+# half a percent of level 9 on this payload at two thirds the CPU. /api/state
+# bypasses this by compressing once per cache fill and sending Content-Encoding
+# itself; the middleware passes an already-encoded response through untouched.
+app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=6)
 # First thing on the stack, so a refused browser request never reaches a route or
 # a WebSocket handler. See otto/originguard.py for what it stops and why requests
 # without an Origin (hook, CLI) still pass. Starlette builds the stack on the
@@ -823,6 +835,8 @@ app.add_middleware(OriginGuard, allowed_origins=config.ALLOWED_ORIGINS,
                    allowed_hosts=config.ALLOWED_HOSTS)
 from . import web_term  # noqa: E402  # mounted here so the terminal routes live on the one app
 web_term.register(app)
+from . import web_events  # noqa: E402  # same reason: the change socket lives on the one app
+web_events.register(app, store)
 
 
 class SpawnRequest(BaseModel):
@@ -1019,14 +1033,95 @@ def health() -> dict[str, Any]:
 # most frequently requested: the dashboard polls it every 2-3s, the desktop tray
 # every 20s, and a second dashboard doubles it. On 2026-10-02 that alone held the
 # daemon near 60% CPU with 90% spikes, /api/state took 1.5-2s, and the tray's 3s
-# health timeout called a busy daemon "unreachable". One computation serves every
-# client inside the window; a poll right after an action may be up to a second
-# stale, which the UI already covers with its optimistic local moves.
-STATE_CACHE_SECONDS = 1.0
+# health timeout called a busy daemon "unreachable".
+#
+# The cache is keyed on store.version (bumped by every write, see otto/store.py):
+# a write invalidates it at once, so the poll after an action sees the action,
+# and while nothing is written the same bytes serve every client for up to
+# config.STATE_IDLE_CACHE_SECONDS (the clock-driven fields, due flags and the
+# machine snapshot, are what that bound is for). The payload is serialized and
+# gzipped ONCE per fill: serializing 2 MB of JSON per request was itself a cost,
+# and compressing it per request would have been a bigger one. The ETag is the
+# sha1 of the JSON bytes; a poll that already holds them gets a bodyless 304.
 BRIEFING_CACHE_SECONDS = 15.0
-_state_cache: tuple[float, dict[str, Any]] | None = None
 _briefing_cache: tuple[float, dict[str, Any]] | None = None
 _state_lock = threading.Lock()
+
+
+class _StateCache:
+    """One computed /api/state payload, in the forms it is served in."""
+
+    __slots__ = ("built_at", "version", "body", "gzipped", "etag")
+
+    def __init__(self, version: int, payload: dict[str, Any]) -> None:
+        self.built_at = time.time()
+        self.version = version
+        self.body = json.dumps(jsonable_encoder(payload), ensure_ascii=False,
+                               separators=(",", ":")).encode("utf-8")
+        self.gzipped = gzip.compress(self.body, compresslevel=6)
+        self.etag = f'"{hashlib.sha1(self.body).hexdigest()}"'
+
+
+_state_cache: _StateCache | None = None
+
+
+def _slim_detail(row: dict[str, Any]) -> None:
+    """Cut a task-shaped row's `detail` for the state payload, in place.
+
+    The card draws three lines of it; the inspector fetches GET /api/tasks/{id}
+    for the whole text. `detail_truncated` is present only when something was cut,
+    so a row without the flag carries its full detail.
+    """
+    detail = row.get("detail")
+    if isinstance(detail, str) and len(detail) > config.STATE_DETAIL_CHARS:
+        row["detail"] = detail[: config.STATE_DETAIL_CHARS]
+        row["detail_truncated"] = True
+
+
+def _slim_state(payload: dict[str, Any]) -> dict[str, Any]:
+    """Trim the fields the dashboard never draws in full. Everything else is kept."""
+    for row in payload.get("tasks") or []:
+        _slim_detail(row)
+    for col in (payload.get("board") or {}).get("columns") or []:
+        for card in col.get("cards") or []:
+            _slim_detail(card)
+    return payload
+
+
+def _state_payload() -> _StateCache:
+    """The current payload, computed only when the store moved or the idle bound
+    passed. Serialized under the lock so a second poller waits for the bytes
+    rather than computing its own."""
+    global _state_cache
+    with _state_lock:
+        version = store.version
+        cached = _state_cache
+        if (cached is not None and cached.version == version
+                and time.time() - cached.built_at < config.STATE_IDLE_CACHE_SECONDS):
+            return cached
+        # Read the version BEFORE computing: a write that lands mid-computation
+        # then shows as a newer version on the next poll and forces a recompute,
+        # instead of being masked by a cache stamped after it.
+        version = store.version
+        cached = _StateCache(version, _slim_state(_compute_state()))
+        _state_cache = cached
+        return cached
+
+
+def _etag_matches(header: str | None, etag: str) -> bool:
+    """RFC 7232 If-None-Match: a comma list of quoted tags, maybe W/-prefixed, or *.
+    Weak comparison is fine here: the tag is a digest of the exact bytes."""
+    if not header:
+        return False
+    for tag in header.split(","):
+        tag = tag.strip()
+        if tag == "*":
+            return True
+        if tag.startswith("W/"):
+            tag = tag[2:]
+        if tag == etag:
+            return True
+    return False
 
 
 def _cached_briefing() -> dict[str, Any]:
@@ -1042,15 +1137,18 @@ def _cached_briefing() -> dict[str, Any]:
 
 
 @app.get("/api/state")
-def state() -> dict[str, Any]:
-    global _state_cache
-    with _state_lock:
-        now = time.time()
-        if _state_cache and now - _state_cache[0] < STATE_CACHE_SECONDS:
-            return _state_cache[1]
-        payload = _compute_state()
-        _state_cache = (time.time(), payload)
-        return payload
+def state(request: Request) -> Response:
+    cached = _state_payload()
+    # no-cache means "revalidate every time", not "never store": the browser
+    # keeps the body and sends If-None-Match, which is exactly the 304 path.
+    headers = {"ETag": cached.etag, "Cache-Control": "no-cache",
+               "Vary": "Accept-Encoding"}
+    if _etag_matches(request.headers.get("if-none-match"), cached.etag):
+        return Response(status_code=304, headers=headers)
+    if "gzip" in request.headers.get("accept-encoding", ""):
+        headers["Content-Encoding"] = "gzip"
+        return Response(cached.gzipped, media_type="application/json", headers=headers)
+    return Response(cached.body, media_type="application/json", headers=headers)
 
 
 def _compute_state() -> dict[str, Any]:
@@ -1089,7 +1187,8 @@ def _compute_state() -> dict[str, Any]:
         "at": iso(utcnow()),
         "domains": list(config.DOMAINS),
         "alerts": [a.model_dump() for a in alerts],
-        "runs": [{**r.model_dump(), "verdict": verdict.verdict(r)} for r in runs[:80]],
+        "runs": [{**r.model_dump(), "verdict": verdict.verdict(r)}
+                 for r in runs[:config.STATE_RUNS]],
         "active_runs": len([r for r in runs if r.active]),
         "schedules": sched_rows,
         "integrations": integ_rows,
@@ -1116,7 +1215,7 @@ def _compute_state() -> dict[str, Any]:
         "autorun": get_autorun(),
         "live": get_live(),
         "sessions": list_sessions(),
-        "events": [e.model_dump() for e in store.events(60)],
+        "events": [e.model_dump() for e in store.events(config.STATE_EVENTS)],
     }
 
 

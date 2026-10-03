@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Otto</title>
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#161826" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f4f4f8" media="(prefers-color-scheme: light)">
+  <!-- The Otto mark, same file the desktop app ships as its window icon. -->
+  <link rel="icon" type="image/png" sizes="256x256" href="/static/icon.png">
+  <link rel="apple-touch-icon" href="/static/icon.png">
   <link rel="stylesheet" href="/static/style.css">
   <!-- Phosphor, as the design specifies. If it fails to load the icons collapse to
        nothing rather than tofu; every one of them sits beside a text label. -->
@@ -17,8 +23,11 @@
   <!-- ══════════════════════════ rail ══════════════════════════ -->
   <aside class="rail">
     <div class="rail-brand">
-      <span class="rail-mark">O</span>
-      <span class="rail-name" id="persona">Otto</span>
+      <img class="rail-mark" src="/static/icon.png" alt="" width="28" height="28">
+      <span class="rail-brand-text">
+        <span class="rail-name" id="persona">Otto</span>
+        <span class="rail-sub">control room</span>
+      </span>
     </div>
 
     <nav class="rail-nav" id="rail-nav"></nav>
@@ -32,7 +41,7 @@
 
       <div class="domain-seg" id="domain-seg"></div>
 
-      <div class="daemon-chip" id="daemon-chip" title="single writer">
+      <div class="daemon-chip" id="daemon-chip" title="single writer" role="status" aria-live="polite">
         <span class="daemon-dot"></span>
         <span class="lbl" id="daemon-text">daemon up</span>
       </div>
@@ -50,14 +59,14 @@
       <span class="scope-chip" id="scope-chip" hidden>
         <i class="ph ph-folder-open"></i>
         <span id="scope-chip-path"></span>
-        <button type="button" id="scope-clear" title="Leave this repository"><i class="ph ph-x"></i></button>
+        <button type="button" id="scope-clear" title="Leave this repository" aria-label="Leave this repository"><i class="ph ph-x"></i></button>
       </span>
       <!-- Selection is shell state. Pick a person once and every view that knows about
            people (Board, Threads, Outreach, People) keeps them in focus until cleared. -->
       <span class="scope-chip person-chip" id="person-chip" hidden>
         <i class="ph ph-user-focus"></i>
         <span id="person-chip-name"></span>
-        <button type="button" id="person-clear" title="Stop focusing on this person"><i class="ph ph-x"></i></button>
+        <button type="button" id="person-clear" title="Stop focusing on this person" aria-label="Stop focusing on this person"><i class="ph ph-x"></i></button>
       </span>
       <span class="spacer"></span>
       <button type="button" class="palette-btn" id="palette-btn">
@@ -65,7 +74,7 @@
         <span>Run a command</span>
         <span class="kbd">^K</span>
       </button>
-      <button type="button" class="icon-btn" id="split-btn" title="Split the workspace (Ctrl+\)">
+      <button type="button" class="icon-btn" id="split-btn" title="Split the workspace (Ctrl+\)" aria-label="Split the workspace">
         <i class="ph ph-columns"></i>
       </button>
       <span id="top-actions"></span>
@@ -73,7 +82,7 @@
 
     <!-- The shell owns connection state. One banner, above every view, that says how
          old the numbers below it are. Views never render their own "unreachable". -->
-    <div class="conn-banner" id="conn-banner" hidden>
+    <div class="conn-banner" id="conn-banner" role="status" aria-live="polite" hidden>
       <i class="ph ph-plugs"></i>
       <span id="conn-text"></span>
       <span class="spacer"></span>
@@ -90,7 +99,7 @@
          CLI, one string at a time. -->
     <footer class="echo-bar" id="echo-bar">
       <span class="echo-mark">›</span>
-      <button type="button" class="echo-cmd" id="echo-cmd" title="copy">otto status</button>
+      <button type="button" class="echo-cmd" id="echo-cmd" title="Copy this command" aria-label="Copy this command">otto status</button>
       <span class="echo-note" id="echo-note">the command your last click was worth</span>
       <span class="spacer"></span>
       <span class="echo-right" id="echo-right"></span>
@@ -102,7 +111,7 @@
     <div class="sheet scope-s" id="scope-sheet">
       <div class="sheet-head no-rule">
         <i class="ph ph-folder-open"></i>
-        <input id="scope-q" placeholder="Open Otto in a repository…" autocomplete="off">
+        <input id="scope-q" placeholder="Open Otto in a repository…" autocomplete="off" aria-label="Search repositories">
         <span class="sheet-esc">esc</span>
       </div>
       <p class="sheet-lede">
@@ -118,7 +127,7 @@
     <div class="sheet palette-s" id="palette-sheet">
       <div class="sheet-head">
         <i class="ph ph-terminal-window"></i>
-        <input id="palette-q" placeholder="Every command Otto actually has. Nothing invented." autocomplete="off">
+        <input id="palette-q" placeholder="Every command Otto actually has. Nothing invented." autocomplete="off" aria-label="Search tasks, sessions and commands">
         <span class="sheet-esc">esc</span>
       </div>
       <div class="sheet-list" id="palette-list"></div>
@@ -131,7 +140,7 @@
   <!-- ══════════════════════════ what is this ══════════════════════════ -->
   <div class="overlay cover-o" id="cover-overlay" hidden>
     <div class="sheet cover-s" id="cover-sheet">
-      <button type="button" class="insp-x cover-x" id="cover-x" title="Close (esc)"><i class="ph ph-x"></i></button>
+      <button type="button" class="insp-x cover-x" id="cover-x" title="Close (esc)" aria-label="Close"><i class="ph ph-x"></i></button>
       <div class="cover-kicker">For the person who runs the whole IT function alone. Why this exists.</div>
       <h2 class="cover-title">EYES ON EVERYTHING<br><span>THAT RUNS WITHOUT YOU</span></h2>
       <p class="cover-p">
@@ -158,7 +167,7 @@
       <div class="action-head">
         <div class="action-tags" id="action-tags"></div>
         <h2 id="action-title"></h2>
-        <button type="button" class="insp-x" id="action-x" title="Close (esc)">
+        <button type="button" class="insp-x" id="action-x" title="Close (esc)" aria-label="Close">
           <i class="ph ph-x"></i>
         </button>
       </div>
@@ -220,7 +229,7 @@
       <div class="action-head">
         <div class="action-tags" id="reply-tags"></div>
         <h2 id="reply-title"></h2>
-        <button type="button" class="insp-x" id="reply-x" title="Close (esc)">
+        <button type="button" class="insp-x" id="reply-x" title="Close (esc)" aria-label="Close">
           <i class="ph ph-x"></i>
         </button>
       </div>
@@ -253,7 +262,7 @@
       <div class="action-head">
         <div class="action-tags" id="person-tags"></div>
         <h2 id="person-title"></h2>
-        <button type="button" class="insp-x" id="person-x" title="Close (esc)">
+        <button type="button" class="insp-x" id="person-x" title="Close (esc)" aria-label="Close">
           <i class="ph ph-x"></i>
         </button>
       </div>
@@ -273,7 +282,7 @@
       <div class="action-head">
         <div class="action-tags" id="notice-tags"></div>
         <h2 id="notice-title"></h2>
-        <button type="button" class="insp-x" id="notice-x" title="Close (esc)">
+        <button type="button" class="insp-x" id="notice-x" title="Close (esc)" aria-label="Close">
           <i class="ph ph-x"></i>
         </button>
       </div>
@@ -282,7 +291,7 @@
     </div>
   </div>
 
-  <div class="toast" id="toast" hidden>
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden>
     <i class="ph ph-check"></i><span id="toast-text"></span>
   </div>
 </div>

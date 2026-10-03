@@ -50,6 +50,24 @@ const DAY_MS = 86400000;
  * the interval, not the fix. */
 const POLL_MS_LIVE = 2000;
 const CHAT_POLL_MS = 2000;
+/* With the change socket (/ws/events) open, the daemon says when a state file was
+ * written, so the timer poll is only a safety net for a missed message. Measured
+ * before this: 2.9 MB every 3s, 52 MB a minute, for a board that had not changed. */
+const POLL_MS_PUSH = 15000;
+/* A write usually lands as several files in quick succession; one fetch covers them. */
+const CHANGED_DEBOUNCE_MS = 150;
+const EVT_BACKOFF_MIN = 1000, EVT_BACKOFF_MAX = 30000;
+/* A daemon that is up but has no /ws/events (older build) is retried this often. */
+const EVT_RETRY_ABSENT_MS = 300000;
+/* Cards (or rows) rendered per column before a "Show more" control takes over. The
+ * live board carried ~330 cards: 3,400 DOM nodes and ~80ms of layout on every
+ * rebuild, for pages nobody had scrolled to. */
+const PAGE_CARDS = 40;
+/* Age labels ("3m ago") refresh in place on this cadence instead of the whole view
+ * being rebuilt because the clock moved. Countdowns tick every second, but only
+ * while one is on screen. */
+const AGE_REFRESH_MS = 30000;
+const CLOCK_TICK_MS = 1000;
 
 const CRIT = "var(--crit)", WARN = "var(--warn)", OK = "var(--ok)";
 const CRIT_BG = "var(--crit-bg)", WARN_BG = "var(--warn-bg)", OK_BG = "var(--ok-bg)";
@@ -233,6 +251,30 @@ let checkinEnergy = null;
 let lastSig = null;      // last rendered view signature; equal means skip
 let activitySig = "";    // folded into the signature so a timeline change repaints
 let renderDeferred = false;
+/* Per-pane and per-chrome signatures, so a change in one place rebuilds that place
+ * only: the split's second pane, the inspector, the palette and the scope picker
+ * each compare their own inputs rather than riding every render(). */
+let paneSigs = [null, null];
+let pendingPaneSigs = ["", ""];
+let inspSig = null, palSig = null, scopeSig = null;
+/* Conditional GET. The daemon answers 304 to a matching If-None-Match, and a 304
+ * costs no parse and no render. Counted so the connection chip can say so. */
+let stateEtag = null;
+let count304 = 0, count200 = 0;
+/* The change socket. `evtOpen` slows the fallback poll; `evtVersion` is the
+ * daemon's write counter from hello/changed, kept for the chip's tooltip. */
+let evtSock = null, evtOpen = false, evtVersion = null;
+let evtBackoff = EVT_BACKOFF_MIN, evtTimer = null, changedTimer = null;
+let pollInFlight = null, pollQueued = false;
+/* Board paging: column key -> how many cards are rendered. Survives rebuilds so a
+ * column someone expanded stays expanded until the page reloads. */
+let colShown = {};
+let histShown = PAGE_CARDS;
+/* The state payload truncates long task details to 600 chars (`detail_truncated`);
+ * the inspector and the action sheet fetch the whole thing by id, once. */
+let detailCache = {};
+const detailBusy = new Set();
+let hasCountdown = false;
 /* Whether a mouse button or touch is currently down anywhere. render() holds off
  * while it is, see there. The resume is a timeout, not a direct call: pointerup
  * is followed by mouseup and click in the same task, and a synchronous rebuild
@@ -244,7 +286,8 @@ document.addEventListener("pointerdown", () => {
   /* A watchdog, because the release is not guaranteed to arrive: an HTML5 drag
    * swallows the mouse-up it started with, a pointer that leaves the window can
    * come up anywhere, and a frozen "held" flag deferred every render forever.
-   * No click takes four seconds, so after four the hold is treated as over. */
+   * That was the dashboard freezing after a drag (2026-10-02). No click takes
+   * four seconds, so after four the hold is treated as over. */
   clearTimeout(pointerHeldTimer);
   pointerHeldTimer = setTimeout(pointerReleased, 4000);
 }, true);
@@ -296,6 +339,48 @@ function age(ts) {
   if (s < 5400) return Math.round(s / 60) + "m ago";
   if (s < 172800) return (s / 3600).toFixed(1) + "h ago";
   return (s / 86400).toFixed(1) + "d ago";
+}
+/* An age label the clock tick refreshes in place. `pre`/`post` are the fixed text
+ * around the age ("last " ... " busy"), kept on the node so the refresh can rebuild
+ * the whole string without knowing who made it. */
+function ageEl(ts, cls, pre, post) {
+  const n = el("span", cls, (pre || "") + age(ts) + (post || ""));
+  if (ts) {
+    n.dataset.ts = typeof ts === "number" ? new Date(ts).toISOString() : String(ts);
+    if (pre) n.dataset.pre = pre;
+    if (post) n.dataset.post = post;
+  }
+  return n;
+}
+/* A countdown label ("sends in 7m"). Ticks every second while any is on screen. */
+function countdownEl(ts, cls, pre) {
+  const n = el("span", cls, (pre || "") + countdown(ts));
+  n.dataset.cd = ts;
+  if (pre) n.dataset.pre = pre;
+  hasCountdown = true;
+  return n;
+}
+/* Time-only refresh: every label with a data-ts/data-cd/data-hold attribute gets
+ * its text recomputed, and nothing else moves. This is what replaced `s.at` in the
+ * view signature; before it, every poll rebuilt the whole view so "3m ago" could
+ * become "4m ago". */
+function refreshClocks(ages) {
+  if (ages) {
+    for (const n of document.querySelectorAll("[data-ts]")) {
+      n.textContent = (n.dataset.pre || "") + age(n.dataset.ts) + (n.dataset.post || "");
+    }
+  }
+  if (!hasCountdown) return;
+  const cds = document.querySelectorAll("[data-cd]");
+  const holds = document.querySelectorAll("[data-hold]");
+  if (!cds.length && !holds.length) { hasCountdown = false; return; }
+  for (const n of cds) n.textContent = (n.dataset.pre || "") + countdown(n.dataset.cd);
+  for (const n of holds) {
+    const left = Math.max(0, Date.parse(n.dataset.hold) - Date.now());
+    const total = Math.max(1, Number(n.dataset.total) || 1);
+    if (n.classList.contains("hold-fill")) n.style.width = Math.min(100, Math.round(100 * (1 - left / total))) + "%";
+    else n.textContent = holdLeft(left);
+  }
 }
 function kfmt(n) {
   if (!n) return "0";
@@ -681,8 +766,9 @@ function renderRail() {
     terminal: "", grid: "",
   };
 
+  /* Built into a fragment and swapped in once: the nav is live DOM. */
   const nav = $("rail-nav");
-  nav.replaceChildren();
+  const navFrag = document.createDocumentFragment();
   for (const [key, iconName, label] of MODES) {
     const b = el("button", "mode-btn" + (mode === key ? " on" : ""));
     b.type = "button";
@@ -699,17 +785,19 @@ function renderRail() {
       b.appendChild(c);
     }
     b.addEventListener("click", () => setMode(key));
-    nav.appendChild(b);
+    navFrag.appendChild(b);
   }
+  nav.replaceChildren(navFrag);
 
   const seg = $("domain-seg");
-  seg.replaceChildren();
+  const segFrag = document.createDocumentFragment();
   for (const [key, label] of [["all", "All"], ["work", "Work"], ["personal", "Life"]]) {
     const b = el("button", domain === key ? "on" : null, label);
     b.type = "button";
     b.addEventListener("click", () => { domain = key; sel = null; render(); });
-    seg.appendChild(b);
+    segFrag.appendChild(b);
   }
+  seg.replaceChildren(segFrag);
 
   $("scope-btn").classList.toggle("on", !!scope);
   $("scope-label").textContent = scope || "All roots";
@@ -725,6 +813,7 @@ function renderRail() {
 function renderTopbar() {
   const s = state || {};
   $("mode-title").textContent = TITLES[mode];
+  document.title = "Otto · " + TITLES[mode];
 
   const nextRows = ((s.briefing && s.briefing.next) || []).filter(keep);
   const today = nextRows.filter((r) => r.band === "today");
@@ -790,11 +879,18 @@ function renderConnection() {
   const chip = $("daemon-chip");
   const ok = lastPollError == null && !!state;
   chip.classList.toggle("down", !ok);
+  /* `live` means the change socket is open and the daemon pushes; without it the
+   * chip says "poll" so a quiet dashboard can be told apart from a deaf one. */
+  chip.classList.toggle("live", ok && evtOpen);
   $("daemon-text").textContent = ok
-    ? "daemon up · " + new Date().toISOString().slice(11, 19) + "Z"
+    ? "daemon up · " + (evtOpen ? "push" : "poll") + " · " + new Date().toISOString().slice(11, 19) + "Z"
     : "daemon unreachable";
   chip.title = ok
-    ? `port 8787 · single writer · ${((state || {}).runs || []).length} runs tracked`
+    ? `port 8787 · single writer · ${((state || {}).runs || []).length} runs tracked · `
+      + (evtOpen
+        ? `change socket open (v${evtVersion == null ? "?" : evtVersion}), fallback poll every ${POLL_MS_PUSH / 1000}s`
+        : `no change socket, polling every ${POLL_MS / 1000}s`)
+      + ` · ${count200} fetched, ${count304} unchanged (304)`
     : "start it with: otto serve";
 
   const banner = $("conn-banner");
@@ -893,7 +989,7 @@ function viewToday() {
       head.appendChild(el("span", "chip-sm chip-seen", `seen ${n.seen_count}x`));
     }
     head.appendChild(el("span", "spacer"));
-    head.appendChild(el("span", "mono-dim", age(n.at)));
+    head.appendChild(ageEl(n.at, "mono-dim"));
     card.appendChild(head);
     card.appendChild(el("h3", null, n.title));
     if (n.body) {
@@ -1032,7 +1128,7 @@ function viewToday() {
     h.appendChild(el("strong", null, "Checked in"));
     if (ci.energy) h.appendChild(el("span", "chip-sm", "energy " + ci.energy + "/5"));
     h.appendChild(el("span", "spacer"));
-    h.appendChild(el("span", "mono-dim", age(ci.at)));
+    h.appendChild(ageEl(ci.at, "mono-dim"));
     ciBox.appendChild(h);
     if (ci.note) ciBox.appendChild(el("p", "checkin-note", ci.note));
   } else {
@@ -1143,7 +1239,7 @@ function sessionsSection(s) {
   rows.sort((a, b) => (order[a.state] ?? 3) - (order[b.state] ?? 3)
     || String(a.state_since).localeCompare(String(b.state_since)));
 
-  for (const x of rows) {
+  appendPaged(box, rows, "sessions", (x) => {
     const card = el("article", "live-card");
     const where = x.repo || (x.cwd ? x.cwd.split(/[\\/]/).filter(Boolean).pop() : "unknown");
     const top = el("div", "live-top");
@@ -1178,7 +1274,7 @@ function sessionsSection(s) {
     };
     top.appendChild(open);
     top.appendChild(domTag(x.domain || "work"));
-    top.appendChild(el("span", "mono-dim", age(x.state_since)));
+    top.appendChild(ageEl(x.state_since, "mono-dim"));
     card.appendChild(top);
 
     const detail = x.note || x.last_message;
@@ -1194,8 +1290,8 @@ function sessionsSection(s) {
       m.appendChild(pathEl(x.cwd));
       card.appendChild(m);
     }
-    box.appendChild(card);
-  }
+    return card;
+  });
   return box;
 }
 
@@ -1216,7 +1312,7 @@ function liveCard(r) {
     if (r.plan.expected_seconds && r.plan.elapsed_seconds > r.plan.expected_seconds * 1.5) pt.style.color = WARN;
     top.appendChild(pt);
   } else {
-    top.appendChild(el("span", "mono-dim", age(r.started)));
+    top.appendChild(ageEl(r.started, "mono-dim"));
   }
   card.appendChild(top);
   const now = el("div", "live-now");
@@ -1431,8 +1527,9 @@ function outreachPanel(s, held) {
     /* The countdown is the whole point, so it is the loudest thing on the card. A
      * tier-1 message never sends itself, so it must not show a deadline it does not
      * have: that would train the owner to rush a decision nothing was waiting on. */
-    head.appendChild(el("span", o.tier > 0 ? "mono-dim" : "outreach-clock",
-      o.tier > 0 ? "waits for you" : "sends " + countdown(o.send_after)));
+    head.appendChild(o.tier > 0
+      ? el("span", "mono-dim", "waits for you")
+      : countdownEl(o.send_after, "outreach-clock", "sends "));
     card.appendChild(head);
 
     card.appendChild(el("p", "outreach-body", o.body));
@@ -1450,9 +1547,14 @@ function outreachPanel(s, held) {
       const total = Math.max(1, (o.hold_minutes || 10) * 60000);
       const left = Math.max(0, Date.parse(o.send_after) - Date.now());
       fill.style.width = Math.min(100, Math.round(100 * (1 - left / total))) + "%";
+      /* Both the bar and the figure tick in place with the countdown above. */
+      fill.dataset.hold = o.send_after; fill.dataset.total = String(total);
       track.appendChild(fill);
       strip.appendChild(track);
-      strip.appendChild(el("span", "hold-left", holdLeft(left)));
+      const leftEl = el("span", "hold-left", holdLeft(left));
+      leftEl.dataset.hold = o.send_after;
+      strip.appendChild(leftEl);
+      hasCountdown = true;
       card.appendChild(strip);
     }
 
@@ -1543,6 +1645,43 @@ function boardColumns() {
 }
 function allCards() {
   return boardColumns().flatMap((c) => c.cards || []);
+}
+
+/* ── paging ──
+ * The first page of a long list, then a "Show N more" control that appends the
+ * next page in place (no rebuild, scroll stays put) and loads itself when it
+ * scrolls into view. Selection and drag work on whatever is rendered; select-all
+ * and batch moves go by id and cover the unrendered cards too, which is what
+ * "all shown here" meant before paging and still means. */
+function appendPaged(host, items, key, make, before) {
+  const shown = Math.min(items.length, Math.max(PAGE_CARDS, colShown[key] || 0));
+  colShown[key] = shown;
+  const frag = document.createDocumentFragment();
+  for (const it of items.slice(0, shown)) frag.appendChild(make(it));
+  host.insertBefore(frag, before || null);
+  if (shown < items.length) host.insertBefore(moreButton(host, items, key, make), before || null);
+}
+function moreButton(host, items, key, make) {
+  const b = el("button", "col-more");
+  b.type = "button";
+  const label = () => {
+    const rest = items.length - colShown[key];
+    b.textContent = `Show ${Math.min(PAGE_CARDS, rest)} more · ${rest} not rendered`;
+  };
+  label();
+  const io = new IntersectionObserver((es) => { if (es.some((e) => e.isIntersecting)) grow(); }, { rootMargin: "240px" });
+  const grow = () => {
+    if (!b.isConnected) { io.disconnect(); return; }
+    const from = colShown[key], to = Math.min(items.length, from + PAGE_CARDS);
+    const frag = document.createDocumentFragment();
+    for (const it of items.slice(from, to)) frag.appendChild(make(it));
+    host.insertBefore(frag, b);
+    colShown[key] = to;
+    if (to >= items.length) { io.disconnect(); b.remove(); } else label();
+  };
+  b.addEventListener("click", grow);
+  io.observe(b);
+  return b;
 }
 
 /* ── created-date filter ── */
@@ -1740,7 +1879,7 @@ function viewBoard() {
            : "nothing finished lately")
         + (older ? ` · ${older}` : "")));
     } else {
-      for (const card of cards) col.appendChild(taskCard(card));
+      appendPaged(col, cards, "board:" + key, taskCard);
       if (!cards.length && !older) col.appendChild(el("div", "col-empty", "—"));
       if (older) col.appendChild(el("div", "col-empty", older + ", off the board"));
     }
@@ -2349,7 +2488,12 @@ function viewHistory() {
   wrap.appendChild(runsHead);
 
   const today = localDay(new Date());
+  /* Paged like the board: the first PAGE_CARDS rows across the day sections, then
+   * a control that rebuilds with the next page. The day grouping makes an in-place
+   * append awkward and the list is capped at 80 anyway. */
+  let shownRows = 0, hiddenRows = 0;
   for (const day of days.values()) {
+    if (shownRows >= histShown) { hiddenRows += day.entries.length; continue; }
     const sec = el("section", "hist-day");
     const head = el("div", "hist-day-head");
     const label = day.date === today ? "Today" : day.at.toLocaleDateString(undefined, { weekday: "long" });
@@ -2367,6 +2511,8 @@ function viewHistory() {
     sec.appendChild(head);
 
     for (const r of day.entries) {
+      if (shownRows >= histShown) { hiddenRows++; continue; }
+      shownRows++;
       const row = el("div", "hist-row");
       row.appendChild(el("span", "at", new Date(r.started).toTimeString().slice(0, 5)));
       const [iName, iFg] = SICO[r.status] || ["ph ph-dot", "var(--color-text)"];
@@ -2406,6 +2552,12 @@ function viewHistory() {
     }
     wrap.appendChild(sec);
   }
+  if (hiddenRows) {
+    const more = el("button", "col-more", `Show ${Math.min(PAGE_CARDS, hiddenRows)} more · ${hiddenRows} not rendered`);
+    more.type = "button";
+    more.addEventListener("click", () => { histShown += PAGE_CARDS; render(true); });
+    wrap.appendChild(more);
+  }
   return wrap;
 }
 
@@ -2430,6 +2582,7 @@ function inspectSession(s) {
   title.appendChild(el("span", "spacer"));
   const x = el("button", "insp-x");
   x.type = "button";
+  x.setAttribute("aria-label", "Close the inspector");
   x.appendChild(ico("ph ph-x"));
   x.addEventListener("click", clearSelection);
   title.appendChild(x);
@@ -2631,7 +2784,7 @@ function viewPlane() {
       card.appendChild(el("p", "sched-detail", detail || ""));
       const kv = el("div", "sched-kv");
       kv.appendChild(el("span", null, cadenceText(sc)));
-      kv.appendChild(el("span", null, "last " + age(sc.last_run)));
+      kv.appendChild(ageEl(sc.last_run, null, "last "));
       card.appendChild(kv);
 
       const acts = el("div", "sched-acts");
@@ -2925,6 +3078,7 @@ function fillPeople(tbody) {
     const fb = el("button", "insp-x");
     fb.type = "button";
     fb.title = focused ? "Stop focusing on " + (p.display_name || p.slug) : "Focus on this person everywhere";
+    fb.setAttribute("aria-label", fb.title);
     fb.appendChild(ico(focused ? "ph ph-user-focus" : "ph ph-crosshair-simple"));
     fb.style.fontSize = "13px";
     if (focused) fb.style.color = WARN;
@@ -3088,7 +3242,7 @@ async function openPerson(slug) {
 
   const facts = el("dl", "person-facts");
   const factRows = d.external
-    ? [["email", "Email"], ["org", "Organisation"], ["slack_id", "Slack ID"],
+    ? [["email", "Email"], ["org", "Organization"], ["slack_id", "Slack ID"],
        ["timezone", "Timezone"], ["first_seen", "First seen"]]
     : [["login", "Login"], ["manager", "Manager"], ["startDate", "Started"],
        ["timezone", "Timezone"], ["employeeNumber", "Employee #"], ["discordid", "Discord"]];
@@ -3305,7 +3459,7 @@ function noticeRows(body) {
     const line = raw.trim();
     const bullet = line.match(/^[-*•]\s+(.*)$/);
     if (bullet && !indented) {
-      /* Split on the first colon so "Alex Rivera, open since 2026-07-06 (30d)"
+      /* Split on the first colon so "Jonathan Criner, open since 2026-07-06 (30d)"
        * reads as the subject and the rest as what happened. Only when the lead-in
        * is short enough to actually be one: a colon inside prose is not a label. */
       const text = bullet[1];
@@ -3450,7 +3604,7 @@ function openNotice(n) {
   }
   if (n.domain) tags.appendChild(domTag(n.domain));
   /* First sighting, not the latest. A thing outstanding since 19:14 keeps saying so. */
-  tags.appendChild(el("span", "mono-dim", age(n.at)));
+  tags.appendChild(ageEl(n.at, "mono-dim"));
 
   $("notice-title").textContent = n.title;
 
@@ -3729,7 +3883,7 @@ function writingIdeaCard(p) {
   const head = el("div", "notice-head");
   head.appendChild(themeChips(p));
   head.appendChild(el("span", "spacer"));
-  head.appendChild(el("span", "mono-dim", p.id + " · " + age(p.created)));
+  head.appendChild(ageEl(p.created, "mono-dim", p.id + " · "));
   card.appendChild(head);
   card.appendChild(el("h3", null, p.hook));
   if (p.stance || p.pushback || p.question) {
@@ -3806,8 +3960,8 @@ function writingDraftCard(p) {
   }
   head.appendChild(el("span", "spacer"));
   const words = p.draft ? p.draft.split(/\s+/).filter(Boolean).length : 0;
-  head.appendChild(el("span", "mono-dim",
-    p.id + (words ? " · " + words + " words" : "") + (p.cost_usd ? " · " + usd(p.cost_usd) : "") + " · " + age(p.updated)));
+  head.appendChild(ageEl(p.updated, "mono-dim",
+    p.id + (words ? " · " + words + " words" : "") + (p.cost_usd ? " · " + usd(p.cost_usd) : "") + " · "));
   card.appendChild(head);
   card.appendChild(el("h3", null, p.hook));
 
@@ -4101,8 +4255,33 @@ function viewWriting() {
   return wrap;
 }
 
-function renderInspector() {
+/* What the inspector reads for the current selection, so it rebuilds only when
+ * that changed. The selected record itself is serialized (a few KB at most); the
+ * caches it draws on are cheap identities. */
+function inspectorSignature() {
+  const s = state || {};
+  if (!sel) return "none";
+  let item = null;
+  if (sel.type === "task") {
+    item = [allCards().find((k) => k.id === sel.id), (s.tasks || []).find((t) => t.id === sel.id),
+      detailCache[sel.id], s.logistics, s.dispatch, s.sessions];
+  } else if (sel.type === "run") {
+    item = [(s.live || []).find((x) => x.id === sel.id), (s.runs || []).find((x) => x.id === sel.id),
+      activitySig, planCache[sel.id], timelineOpen, eventsOpen, s.events, (s.repos || null)];
+  } else if (sel.type === "sched") {
+    item = [(s.schedules || []).find((x) => x.name === sel.id), s.known, s.autorun,
+      (s.runs || []).filter((r) => r.name === sel.id).map((r) => r.id + r.status)];
+  } else if (sel.type === "session") {
+    item = [sessionRow(sel.id), s.logistics, ledgerDetail[sel.id], dispatchPickOpen, s.tasks ? s.tasks.length : 0];
+  }
+  return JSON.stringify([sel, item, personSel && personSel.slug, scope, domain, repoData && repoData.repos && repoData.repos.length]);
+}
+
+function renderInspector(force) {
   const host = $("inspector");
+  const sig = inspectorSignature();
+  if (!force && sig === inspSig) return;
+  inspSig = sig;
   host.replaceChildren();
   const s = state || {};
 
@@ -4217,10 +4396,11 @@ function repoPanel(s) {
     ["definitions", r.defs, "var(--color-text)"],
     ["open work", boardTotal, boardTotal ? WARN : "var(--color-text)"],
     ["in flight", live, live ? ACCENT : "var(--color-text)"],
-    ["last run", age(r.last), "var(--color-text)"],
+    ["last run", r.last, "var(--color-text)"],
   ]) {
     const cell = el("div", "repo-stat");
-    const vv = el("div", "v", String(v));
+    const vv = k === "last run" ? el("div", "v") : el("div", "v", String(v));
+    if (k === "last run") vv.appendChild(ageEl(v, null));
     vv.style.color = fg;
     cell.appendChild(vv);
     cell.appendChild(el("div", "k", k));
@@ -4243,6 +4423,7 @@ function inspectRun(s) {
   title.appendChild(el("span", "spacer"));
   const x = el("button", "insp-x");
   x.type = "button";
+  x.setAttribute("aria-label", "Close the inspector");
   x.appendChild(ico("ph ph-x"));
   x.addEventListener("click", clearSelection);
   title.appendChild(x);
@@ -4440,6 +4621,7 @@ function inspectTask(s) {
   hd.appendChild(left);
   const x = el("button", "insp-x");
   x.type = "button";
+  x.setAttribute("aria-label", "Close the inspector");
   x.appendChild(ico("ph ph-x"));
   x.addEventListener("click", clearSelection);
   hd.appendChild(x);
@@ -4462,7 +4644,14 @@ function inspectTask(s) {
     c.appendChild(el("span", "mono", card.last_error));
     wrap.appendChild(c);
   }
-  if (card.detail) wrap.appendChild(el("p", "insp-detail", card.detail));
+  /* The payload truncates long details; the whole text is one GET away and the
+   * inspector is the place that wants it. */
+  const detailText = fullDetailOf(card);
+  if (detailText) wrap.appendChild(el("p", "insp-detail", detailText));
+  if (needsFullDetail(card)) {
+    wrap.appendChild(el("p", "mono-dim", "loading the full detail…"));
+    loadFullDetail(card.id);
+  }
   if (card.result) {
     wrap.appendChild(el("h3", "insp-h2", "What the run reported"));
     wrap.appendChild(el("p", "insp-pre", card.result));
@@ -4565,6 +4754,7 @@ function inspectSched(s) {
   hd.appendChild(left);
   const x = el("button", "insp-x");
   x.type = "button";
+  x.setAttribute("aria-label", "Close the inspector");
   x.appendChild(ico("ph ph-x"));
   x.addEventListener("click", clearSelection);
   hd.appendChild(x);
@@ -4585,7 +4775,7 @@ function inspectSched(s) {
     ["Runner", sc.runner],
     ["Armed", sc.autostart ? "yes — runs unattended" : "no"],
     ["Stale after", sc.max_age_hours ? sc.max_age_hours + "h" : "no alarm set"],
-    ["Last run", age(sc.last_run)],
+    ["Last run", ageEl(sc.last_run, "v mono")],
     ["Last status", sc.last_status],
     ["Failures", sc.consecutive_failures ? String(sc.consecutive_failures) : null],
     ["Domain", sc.domain],
@@ -4594,7 +4784,7 @@ function inspectSched(s) {
     if (!v) continue;
     const row = el("div", "insp-kv");
     row.appendChild(el("span", "k", k));
-    row.appendChild(el("span", "v mono", String(v)));
+    row.appendChild(v instanceof Node ? v : el("span", "v mono", String(v)));
     wrap.appendChild(row);
   }
 
@@ -4753,6 +4943,32 @@ function actionable(src, from) {
 
 function storedTaskId(item) { return (item && item.storedId) || null; }
 
+/* ── full task detail ──
+ * /api/state carries at most 600 chars of a task's detail (`detail_truncated`),
+ * which is plenty for a card and not for a prompt or the inspector. The board card
+ * and the stored task may each carry the flag, depending on which the daemon
+ * truncated, so both are checked. */
+function needsFullDetail(k) {
+  if (!k || !k.id || detailCache[k.id] != null) return false;
+  if (k.detail_truncated) return true;
+  const t = ((state || {}).tasks || []).find((x) => x.id === k.id);
+  return !!(t && t.detail_truncated);
+}
+function fullDetailOf(k) {
+  return (k && detailCache[k.id] != null ? detailCache[k.id] : (k && k.detail)) || "";
+}
+async function loadFullDetail(id) {
+  if (detailBusy.has(id)) return detailCache[id];
+  detailBusy.add(id);
+  try {
+    const t = await api(`/api/tasks/${id}`);
+    detailCache[id] = (t && (t.detail || (t.task && t.task.detail))) || "";
+  } catch { /* keep the truncated text; the next open tries again */ }
+  finally { detailBusy.delete(id); }
+  if (sel && sel.type === "task" && sel.id === id) renderInspector();
+  return detailCache[id];
+}
+
 function buildPrompt(item, ctx, cwd) {
   const lines = [
     `You are acting on an item Otto surfaced. Do the work; do not just describe it.`,
@@ -4793,6 +5009,16 @@ async function openAction(item) {
       agentList = rows.filter((e) => e.kind === "agent" && !e.missing)
         .map((e) => e.name).sort();
     } catch { agentList = []; }
+  }
+  /* The "why" becomes the prompt's WHY line. A truncated one would hand the
+   * session 600 chars of a 3,000-char brief, so the whole thing is fetched first. */
+  if (item.storedId) {
+    const k = allCards().find((c) => c.id === item.storedId);
+    if (k && needsFullDetail(k)) {
+      const d = await loadFullDetail(item.storedId);
+      if (actionItem !== item) return;
+      if (d) item.why = d;
+    }
   }
 
   const tags = $("action-tags");
@@ -5000,20 +5226,26 @@ function paletteHits() {
 
 function renderPalette() {
   $("palette-overlay").hidden = !paletteOpen;
-  if (!paletteOpen) return;
+  if (!paletteOpen) { palSig = null; return; }
   const list = $("palette-list");
-  list.replaceChildren();
   const hits = paletteHits();
+  /* Rebuilt only when the query, the cursor or the hits changed; render() calls
+   * this on every state change and the list is live DOM. */
+  const sig = JSON.stringify([paletteQuery, paletteIdx, hits.map((c) => c.cmd + "\u0001" + c.desc)]);
+  if (sig === palSig) return;
+  palSig = sig;
+  list.replaceChildren();
   if (!hits.length) {
     list.appendChild(el("p", "sheet-empty",
       "No such command. Otto would rather say none exists than invent a plausible one."));
     return;
   }
+  const frag = document.createDocumentFragment();
   let group = null;
   hits.forEach((c, i) => {
     if (c.group !== group) {
       group = c.group;
-      list.appendChild(el("div", "pal-group", group));
+      frag.appendChild(el("div", "pal-group", group));
     }
     const b = el("button", "pal-row" + (i === paletteIdx ? " on" : ""));
     b.type = "button";
@@ -5023,8 +5255,9 @@ function renderPalette() {
       if (paletteIdx !== i) { paletteIdx = i; renderPalette(); }
     });
     b.addEventListener("click", () => pickPalette(c));
-    list.appendChild(b);
+    frag.appendChild(b);
   });
+  list.appendChild(frag);
 }
 function pickPalette(c) {
   paletteOpen = false;
@@ -5049,8 +5282,12 @@ function closeCover() {
 
 function renderScopePicker() {
   $("scope-overlay").hidden = !scopeOpen;
-  if (!scopeOpen) return;
+  if (!scopeOpen) { scopeSig = null; return; }
   const list = $("scope-list");
+  const sig = JSON.stringify([scopeQuery, scope, repoData && (repoData.repos || []).map(
+    (r) => [r.key, r.running, r.missing, r.tasks, r.defs, r.note])]);
+  if (sig === scopeSig) return;
+  scopeSig = sig;
   list.replaceChildren();
 
   const totalDefs = (repoData ? repoData.repos : []).reduce((n, r) => n + r.defs, 0);
@@ -5130,44 +5367,83 @@ function setMode(next) {
   const m = TITLES[next] ? next : "today";
   /* With the workspace split, the rail drives the FOCUSED pane. */
   if (splitMode && focusedPane === 1) { splitMode = m; render(true); return; }
+  const changed = mode !== m;
   mode = m;
   location.hash = mode;
   if (mode === "plane" && planeTab === "registry" && !registryRows) loadRegistry();
   if (mode === "plane" && planeTab === "people" && !peopleRows) loadPeople();
   if (mode === "writing" && !writingData) loadWriting();
   render();
+  /* The view-change transition is keyed on a class, not on insertion: a poll
+   * re-renders the same view and a fade per poll would be a flicker. */
+  const centre = $("centre");
+  if (changed && centre) {
+    centre.classList.add("view-enter");
+    centre.addEventListener("animationend", () => centre.classList.remove("view-enter"), { once: true });
+    setTimeout(() => centre.classList.remove("view-enter"), 400);
+  }
 }
 
-/* Everything that decides what the centre pane looks like. Cheap to build, and
- * comparing it means a poll that changed nothing costs zero DOM work. */
+/* What a view reads from the state, serialized. The Board reads two keys and gets
+ * the cheap slice (~1ms); every other view gets everything except `at` (the clock,
+ * which is what used to force a rebuild every poll) and `tasks` (2 MB that only
+ * the inspector reads, by id). Hand-listing fields per view was how the Dispatch
+ * rail and the sessions list came to be missing from the old signature and only
+ * repainted because `at` changed. */
+const BOARD_KEYS = ["board", "dispatch"];
+const DIGEST_SKIP = new Set(["at", "tasks"]);
+/* Every `at` at any depth is a clock stamp the daemon rewrites on each read
+ * (dispatch.at, logistics.at, alerts[].at), and `machine` is the CPU gauge. Neither
+ * is a change in what a view shows, except the Control plane's host rows. */
+const digestReplacer = (k, v) => (k === "at" ? undefined : v);
+function stateDigest(m) {
+  const s = state || {};
+  if (!m) return "";
+  if (m === "board") return JSON.stringify(BOARD_KEYS.map((k) => s[k]), digestReplacer);
+  const o = {};
+  for (const k of Object.keys(s)) {
+    if (DIGEST_SKIP.has(k)) continue;
+    if (k === "machine" && m !== "plane") continue;
+    o[k] = s[k];
+  }
+  return JSON.stringify(o, digestReplacer);
+}
+
+/* Everything that decides what ONE pane looks like. `idx` is folded in because the
+ * split strip marks the focused pane. */
+function paneSignature(m, idx) {
+  return JSON.stringify([
+    m, idx, !!splitMode, focusedPane, domain, scope, planeTab, regQuery, peopleQuery,
+    cardDetail, doneOpen, selected.size, [...selected].sort(), createdFilter, colShown, histShown,
+    personSel && personSel.slug, sel && sel.type, sel && sel.id,
+    writingSig, writingError, writingOpenNote, writingUrlFor, writingBusy, writingEditing, writingShowDropped,
+    ledgerAt, ledgerDays, histWho, registryRows ? registryRows.length : -1, registryError,
+    peopleRows ? peopleRows.length : -1, peopleError,
+    termTarget, termMode, termPanesSig,
+  ]) + stateDigest(m);
+}
+
+/* Everything that decides what the shell looks like: both panes plus the rail and
+ * topbar counts. Comparing it means a poll that changed nothing costs zero DOM
+ * work. Time is deliberately NOT here: age labels refresh in place (refreshClocks),
+ * and the held-outreach countdown ticks on its own, so the clock moving never
+ * rebuilds a view. */
 function viewSignature() {
   const s = state || {};
-  const b = (s.board || {});
-  return JSON.stringify([
-    mode, domain, scope, planeTab, regQuery, cardDetail, doneOpen,
-    selected.size, JSON.stringify(createdFilter),
-    splitMode, focusedPane, personSel && personSel.slug, timelineOpen, eventsOpen,
-    (s.known || []).map((k) => [k.kind, k.name, k.stale_noticed_at]),
-    (s.runs || []).slice(0, 80).map((r) => r.id + ":" + r.status),
-    sel && sel.type, sel && sel.id,
-    s.at, b.total, (s.live || []).length,
-    (s.live || []).map((r) => [r.id, r.tool_calls, r.output_tokens, r.current]),
-    ((s.briefing || {}).next || []).length,
-    ((s.briefing || {}).gaps || []).length,
-    (s.schedules || []).map((x) => [x.name, x.last_run, x.enabled, x.stale, x.due]),
-    Object.entries(s.snapshots || {}).map(([k, v]) => [k, v.fetched_at]),
-    (s.integrations || []).map((i) => [i.name, i.ok]),
-    (s.dispatch || {}).enabled,
-    writingSig, writingError, writingOpenNote, writingUrlFor, writingBusy, writingEditing,
-    ((s.notices) || []).map((n) => [n.id, n.read_at]),
-    /* Held outreach, including send_after: a countdown that only repaints when
-     * something else changes is a countdown that lies between polls. */
-    (((s.outreach) || {}).items || []).map((o) => [o.id, o.state, o.send_after]),
-    JSON.stringify((s.day || {}).checkin || null),
-    ((s.day_prev || {}).rollup || {}).session_count,
-    activitySig,
-    termTarget, termMode, termPanesSig,
+  const a = paneSignature(mode, 0);
+  const b = splitMode ? paneSignature(splitMode, 1) : "";
+  pendingPaneSigs = [a, b];
+  const rail = JSON.stringify([
+    mode, splitMode, focusedPane, domain, scope, personSel && personSel.slug, s.persona,
+    ((s.notices) || []).map((n) => [n.id, n.read_at, n.domain]),
+    ((s.briefing || {}).next || []).map((r) => [r.band, r.domain, r.cwd]),
+    (s.board || {}).total, ((s.board || {}).columns || []).map((c) => [c.key, (c.cards || []).length]),
+    (s.integrations || []).map((i) => [i.name, i.ok, i.mode]),
+    (s.writing || {}).counts,
+    (s.schedules || []).map((x) => [x.name, x.stale, x.stale_level, x.domain]),
+    (s.live || []).length, (s.runs || []).length,
   ]);
+  return rail + "\u0001" + a + "\u0001" + b;
 }
 
 /* A render replaces the centre pane wholesale, which would steal focus and discard
@@ -5183,53 +5459,63 @@ function typingInCentre() {
 
 function render(force) {
   if (!state) return;
-  if (force) {
-    /* A forced render still records the signature, or the very next poll sees a
-     * stale one and rebuilds again for nothing. */
-    lastSig = viewSignature();
-  } else {
-    const sig = viewSignature();
+  /* A forced render still records the signature, or the very next poll sees a
+   * stale one and rebuilds again for nothing. */
+  const sig = viewSignature();
+  if (!force) {
     if (sig === lastSig) return;
     if (typingInCentre()) { renderDeferred = true; return; }
     /* A rebuild mid-drag destroys the node being dragged and the browser cancels
-     * the drag. `s.at` changes every poll, so without this every drag longer than
-     * one poll interval died silently. This is why drag-and-drop "was broken". */
+     * the drag. Before time left the signature every poll rebuilt, so every drag
+     * longer than one poll interval died silently. This is why drag-and-drop "was
+     * broken". The guard stays: a real change can still land mid-drag. */
     if (dragId) { renderDeferred = true; return; }
     /* Same hazard without a drag: a rebuild between mouse-down and mouse-up swaps
-     * the node under the pointer, and the click never fires. `s.at` changes every
-     * poll, so with a 3s poll a click had a few percent chance of landing on a
-     * rebuild and needing a second try, and more once the herdr watcher made state
-     * change oftener. The rebuild waits for the pointer to come back up. */
+     * the node under the pointer, and the click never fires. The rebuild waits
+     * for the pointer to come back up. */
     if (pointerHeld) { renderDeferred = true; return; }
-    lastSig = sig;
   }
+  lastSig = sig;
   renderDeferred = false;
   /* The menu was opened from a card node this rebuild is about to destroy, so it
    * would be left pointing at nothing. */
   closeCardMenu();
   const centre = $("centre"), centre2 = $("centre2");
-  const keepScroll = centre ? centre.scrollTop : 0;
-  const keepScroll2 = centre2 ? centre2.scrollTop : 0;
   renderRail();
   renderTopbar();
 
   /* A split that no longer fits (window shrank, inspector opened) closes itself
    * rather than squeezing two views under PANE_MIN. */
-  if (splitMode && !canSplit()) { splitMode = null; focusedPane = 0; }
+  if (splitMode && !canSplit()) { splitMode = null; focusedPane = 0; pendingPaneSigs = [paneSignature(mode, 0), ""]; }
 
-  renderPane(centre, mode, 0);
+  /* Each pane rebuilds only when ITS inputs changed. A live run ticking in the
+   * second pane used to rebuild the board in the first, and the other way round. */
+  const [sig0, sig1] = pendingPaneSigs;
+  if (force || sig0 !== paneSigs[0]) {
+    const keep = centre.scrollTop;
+    renderPane(centre, mode, 0);
+    if (keep) centre.scrollTop = keep;
+    paneSigs[0] = sig0;
+  }
   $("split").classList.toggle("two", !!splitMode);
   centre2.hidden = !splitMode;
-  if (splitMode) renderPane(centre2, splitMode, 1);
-  else centre2.replaceChildren();
+  if (splitMode) {
+    if (force || sig1 !== paneSigs[1]) {
+      const keep = centre2.scrollTop;
+      renderPane(centre2, splitMode, 1);
+      if (keep) centre2.scrollTop = keep;
+      paneSigs[1] = sig1;
+    }
+  } else if (centre2.firstChild) {
+    centre2.replaceChildren();
+    paneSigs[1] = null;
+  }
 
-  renderInspector();
+  renderInspector(force);
   renderPalette();
   renderScopePicker();
   /* The action modal is NOT rebuilt by render(): a poll tick would wipe half-typed
    * context. It owns its own DOM until it closes. */
-  if (centre && keepScroll) centre.scrollTop = keepScroll;
-  if (centre2 && keepScroll2) centre2.scrollTop = keepScroll2;
 }
 
 /* One pane: a strip naming the view (only when split, so a single pane looks as it
@@ -5433,7 +5719,7 @@ function sessionLiveBlock(sid) {
     ["Pane", r ? `${r.agent} · ${r.pane_id}` : (x && x.herdr_pane ? `${x.herdr_agent || ""} · ${x.herdr_pane}` : "not in herdr")],
     ["Directory", cwd],
     ["Host", x && x.host],
-    ["Since", x ? `${age(x.state_since)} ${eff || x.state}` : null],
+    ["Since", x ? ageEl(x.state_since, null, "", " " + (eff || x.state)) : null],
     ["Turns", x && x.turns ? String(x.turns) : null],
     ["Mode", x && x.permission_mode],
     ["Session", sid.slice(0, 8)],
@@ -5443,7 +5729,9 @@ function sessionLiveBlock(sid) {
     const row = el("div", "insp-kv");
     row.appendChild(el("span", "k", k));
     const vv = el("span", "v" + (k === "Session" ? " mono" : ""));
-    if (k === "Directory") vv.appendChild(pathEl(v)); else vv.textContent = String(v);
+    if (k === "Directory") vv.appendChild(pathEl(v));
+    else if (v instanceof Node) vv.appendChild(v);
+    else vv.textContent = String(v);
     row.appendChild(vv);
     box.appendChild(row);
   }
@@ -5731,7 +6019,10 @@ function viewDispatch() {
     t.appendChild(el("span", "mono-dim", "→"));
     t.appendChild(pill(p.agent, "idle"));
     t.appendChild(el("span", "spacer"));
-    t.appendChild(el("span", "mono-dim", "conf " + p.confidence.toFixed(2)));
+    const conf = el("span", "lg-conf", "conf " + p.confidence.toFixed(2));
+    conf.style.setProperty("--conf", String(p.confidence));
+    conf.title = "How well this card fits this pane, 0 to 1; the reason is below";
+    t.appendChild(conf);
     c.appendChild(t);
     const ttl = el("div", "tcard-title", p.task_title);
     ttl.style.cursor = "pointer";
@@ -6075,6 +6366,7 @@ function renderPane(host, m, idx) {
     const x = el("button", "insp-x");
     x.type = "button";
     x.title = "Close this pane";
+    x.setAttribute("aria-label", "Close this pane");
     x.appendChild(ico("ph ph-x"));
     x.addEventListener("click", () => closeSplit(idx));
     strip.appendChild(x);
@@ -6108,13 +6400,43 @@ function closeSplit(idx) {
 
 /* ============================== poll ============================== */
 
-async function poll() {
+/* GET /api/state with If-None-Match. A 304 means the daemon's state has not changed
+ * since the last 200: nothing to parse, nothing to render. A daemon without ETags
+ * never answers 304 and this is a plain GET. */
+async function fetchState() {
+  const headers = {};
+  if (stateEtag) headers["If-None-Match"] = stateEtag;
+  const r = await fetch("/api/state", { cache: "no-store", headers });
+  if (r.status === 304) { count304++; return null; }
+  if (!r.ok) {
+    let detail = `HTTP ${r.status}`;
+    try { detail = (await r.json()).detail || detail; } catch { /* non-JSON */ }
+    throw new Error(detail);
+  }
+  stateEtag = r.headers.get("ETag") || null;
+  count200++;
+  return r.json();
+}
+
+/* One poll at a time. A change event landing while a fetch is in flight queues one
+ * more rather than racing it, and callers that `await poll()` get the in-flight one. */
+function poll() {
+  if (pollInFlight) { pollQueued = true; return pollInFlight; }
+  pollInFlight = pollOnce().finally(() => {
+    pollInFlight = null;
+    if (pollQueued) { pollQueued = false; pollSoon(0); }
+  });
+  return pollInFlight;
+}
+
+async function pollOnce() {
+  clearTimeout(pollTimer);
   try {
     const [s, r] = await Promise.all([
-      api("/api/state"),
+      fetchState(),
       repoData ? Promise.resolve(repoData) : api("/api/repos"),
     ]);
-    state = s;
+    if (s) state = s;
     repoData = r;
     lastGoodAt = Date.now();
     const wasDown = lastPollError != null;
@@ -6126,11 +6448,18 @@ async function poll() {
       if (busy || Date.now() - writingLoadedAt > 30000) loadWriting();
     }
     /* A live run's activity is the one thing that changes second to second. */
-    if (sel && sel.type === "run" && (s.live || []).some((x) => x.id === sel.id)) {
+    if (sel && sel.type === "run" && ((state || {}).live || []).some((x) => x.id === sel.id)) {
       loadActivity(sel.id);
       loadPlan(sel.id);
     }
-    if (wasDown) render(true); else render();
+    /* A 304 changed nothing, so only the chip's clock moves. */
+    if (wasDown) render(true); else if (s) render();
+    /* The change socket is opened from here, after a poll has succeeded, so a
+     * refused handshake can be read as "this daemon has no /ws/events" rather than
+     * "the daemon is down". Back from unreachable means a restart: a pending retry
+     * (possibly the long one) is dropped and the socket tried now. */
+    if (wasDown) { clearTimeout(evtTimer); evtTimer = null; }
+    if (!evtSock && evtTimer == null) connectEvents();
     renderConnection();
     openPendingReply();
   } catch (e) {
@@ -6165,8 +6494,106 @@ async function loadPlan(id) {
 function schedulePoll() {
   clearTimeout(pollTimer);
   const busy = state && (state.live || []).length > 0;
-  pollTimer = setTimeout(poll, busy ? POLL_MS_LIVE : POLL_MS);
+  /* With the change socket open the daemon tells us when to fetch, so the timer is
+   * a safety net. Without it, the old cadence: 2s while a run is live, else 3s. */
+  const ms = evtOpen ? POLL_MS_PUSH : (busy ? POLL_MS_LIVE : POLL_MS);
+  pollTimer = setTimeout(poll, ms);
 }
+
+/* ============================== change socket ==============================
+ *
+ * /ws/events: {"t":"hello","v":N} on connect, {"t":"changed","v":N} whenever a
+ * state file was written, {"t":"ping"} every 25s. A `changed` becomes one poll,
+ * debounced, so a write that lands as five files costs one fetch. The socket
+ * closing (daemon restart, or a daemon that does not have the endpoint yet) puts
+ * the poll back on its timer and reconnects with backoff, forever: a daemon that
+ * gains the feature on its next restart is picked up without a reload. */
+function connectEvents() {
+  clearTimeout(evtTimer);
+  evtTimer = null;
+  if (evtSock || typeof WebSocket === "undefined") return;
+  let ws;
+  try {
+    ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/events`);
+  } catch {
+    scheduleEventsReconnect();
+    return;
+  }
+  evtSock = ws;
+  ws.onopen = () => {
+    if (evtSock !== ws) return;
+    evtOpen = true;
+    evtBackoff = EVT_BACKOFF_MIN;
+    renderConnection();
+    /* Whatever was written while the socket was down is caught by one fetch now;
+     * schedulePoll() at the end of it slows the timer. */
+    pollSoon(0);
+  };
+  ws.onmessage = (ev) => {
+    if (evtSock !== ws) return;
+    let m;
+    try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.t === "hello") {
+      evtVersion = m.v;
+    } else if (m.t === "changed") {
+      evtVersion = m.v;
+      clearTimeout(changedTimer);
+      changedTimer = setTimeout(() => { changedTimer = null; pollSoon(0); }, CHANGED_DEBOUNCE_MS);
+    }
+    /* ping: the browser answers the pong itself; the frame arriving is the proof. */
+  };
+  ws.onerror = () => { /* onclose follows and does the work */ };
+  ws.onclose = () => {
+    if (evtSock !== ws) return;
+    evtSock = null;
+    const was = evtOpen;
+    evtOpen = false;
+    if (was) { renderConnection(); schedulePoll(); }
+    /* Refused outright while the daemon answers polls: this daemon has no
+     * /ws/events yet. Each failed handshake is a browser console error, so the
+     * retry waits long; a daemon that comes back from unreachable is tried at
+     * once (pollOnce), which is how a restart with the feature gets picked up. */
+    scheduleEventsReconnect(!was && lastPollError == null && state ? EVT_RETRY_ABSENT_MS : null);
+  };
+}
+function scheduleEventsReconnect(ms) {
+  clearTimeout(evtTimer);
+  evtTimer = setTimeout(connectEvents, ms || evtBackoff);
+  evtBackoff = Math.min(EVT_BACKOFF_MAX, evtBackoff * 2);
+}
+
+/* ============================== skeleton ==============================
+ * What the centre shows between the window opening and the first state arriving
+ * (~550ms on the live board, longer cold). Shaped like the view it stands in for
+ * so the page does not flash from blank to full. */
+function skeleton(m) {
+  const box = el("div", "skel skel-" + m);
+  box.setAttribute("aria-busy", "true");
+  box.setAttribute("aria-label", "loading");
+  box.appendChild(el("div", "skel-line"));
+  if (m === "board") {
+    const cols = el("div", "skel-cols");
+    for (let c = 0; c < 5; c++) {
+      const col = el("div", "skel-col");
+      col.appendChild(el("div", "skel-line w2"));
+      for (let i = 0; i < 4; i++) col.appendChild(el("div", "skel-card"));
+      cols.appendChild(col);
+    }
+    box.appendChild(cols);
+  } else {
+    box.appendChild(el("div", "skel-line w2"));
+    for (let i = 0; i < 5; i++) box.appendChild(el("div", "skel-card"));
+  }
+  return box;
+}
+
+/* For the perf harness and anyone curious in the console: how the page is being
+ * fed. Not rendered anywhere. */
+window.ottoPerf = () => ({
+  etag: stateEtag, fetched: count200, unchanged304: count304,
+  socketOpen: evtOpen, socketVersion: evtVersion,
+  pollMs: evtOpen ? POLL_MS_PUSH : POLL_MS, colShown: { ...colShown },
+});
 
 /* ============================== wiring ============================== */
 
@@ -6348,4 +6775,12 @@ window.addEventListener("hashchange", () => {
 mode = TITLES[location.hash.slice(1)] ? location.hash.slice(1) : "today";
 /* Below the three-pane breakpoint the inspector is a fixed overlay, so a pre-made
  * selection would cover the stream on first paint. */
+if (!$("centre").firstChild) $("centre").appendChild(skeleton(mode));
+/* Clocks: ages every 30s, countdowns every second while one is on screen. */
+let clockTicks = 0;
+setInterval(() => {
+  clockTicks++;
+  refreshClocks(clockTicks % Math.round(AGE_REFRESH_MS / CLOCK_TICK_MS) === 0);
+}, CLOCK_TICK_MS);
+/* poll() opens the change socket once the first state has landed. */
 poll();

@@ -158,6 +158,7 @@
       resizeTimer: null,
       reconnectTimer: null,
       sent: { cols: 0, rows: 0 },
+      box: "",              // "WxH" of the container at the last fit
       /* "connecting" | "open" | "closed" | "error" | "idle" (parked, socket shut) */
       status: "idle",
       reason: "",
@@ -254,6 +255,7 @@
 
   function doFit(pane) {
     if (!pane.root.isConnected || pane.root.clientHeight === 0 || pane.root.clientWidth === 0) return;
+    const box = pane.root.clientWidth + "x" + pane.root.clientHeight;
     if (!pane.opened) {
       pane.term.open(pane.termEl);
       pane.opened = true;
@@ -270,7 +272,14 @@
         } catch (e) { pane.gl = null; }
       }
     }
-    pane.fit.fit();
+    /* A remount into a same-sized host (every view rebuild reparents the pane)
+     * measures the same box. fit() would read computed styles, force a layout and
+     * resize to the cols/rows it already has, and the resize message below is
+     * already guarded by `sent`. Skipping the fit skips the layout too. */
+    if (box !== pane.box) {
+      pane.box = box;
+      pane.fit.fit();
+    }
     if (pane.wantFocus) { pane.wantFocus = false; pane.term.focus(); }
     const { cols, rows } = pane.term;
     if (!pane.ws && pane.mounted && pane.status === "idle") {
