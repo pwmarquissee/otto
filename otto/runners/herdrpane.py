@@ -47,7 +47,7 @@ from typing import Any, NamedTuple
 
 import psutil
 
-from .. import config, herdr
+from .. import config, herdr, safeargs
 from ..models import Run
 
 WORKSPACE_LABEL = "otto-runs"
@@ -60,8 +60,10 @@ _POLL = 0.25
 
 
 def _q(value: Any) -> str:
-    """Single-quote for PowerShell, doubling embedded single quotes."""
-    return "'" + str(value).replace("'", "''") + "'"
+    """Single-quote for PowerShell. Delegates to safeargs.ps_quote, which doubles
+    the typographic single quotes too: PowerShell closes a string on U+2019, and
+    run names are card titles."""
+    return safeargs.ps_quote(value)
 
 
 # ---- the workspace -------------------------------------------------------------
@@ -198,6 +200,9 @@ def _tee_script(cmdline: list[str] | str, log_path: Path, env: dict[str, str] | 
         "$env:PYTHONIOENCODING = 'utf-8'",
     ]
     for k, v in (env or {}).items():
+        # The name is written into the script unquoted, so it must be a name.
+        if not safeargs.is_env_name(k):
+            raise herdr.HerdrError("bad_env", f"not an environment variable name: {k[:64]!r}")
         lines.append(f"$env:{k} = {_q(v)}")
     lines += [
         f"$__w = [IO.StreamWriter]::new({_q(log_path)}, $false, [Text.UTF8Encoding]::new($false))",

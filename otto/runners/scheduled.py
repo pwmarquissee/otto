@@ -189,7 +189,7 @@ def default_schedules() -> list[Schedule]:
                         "and notices. Drafts are on demand: otto writing draft <id>",
             cadence=Cadence(kind="weekly", days=["fri"], at="15:00"),
             runner="writing",
-            autostart=True,
+            autostart=config.SCHEDULES_ARMED_BY_DEFAULT,
             max_age_hours=8 * 24,
         ),
         # The slash-command schedules below only make sense when the command ships
@@ -233,7 +233,7 @@ def default_schedules() -> list[Schedule]:
             description="Pull today's calendar and reply-worthy mail via MCP",
             cadence=Cadence(kind="every", hours=4),
             runner="refresh",
-            autostart=True,
+            autostart=config.SCHEDULES_ARMED_BY_DEFAULT,
             max_age_hours=14,
         ),
         Schedule(
@@ -251,7 +251,7 @@ def default_schedules() -> list[Schedule]:
             # The one class of autostart Otto allows: read-only tools, and the only
             # writes are to Otto's own board and ledger. It files proposals; it does
             # not queue them. See config.MEETINGS_AUTOQUEUE.
-            autostart=True,
+            autostart=config.SCHEDULES_ARMED_BY_DEFAULT,
             # Generous against the 4h cadence because the weekend pause plus a
             # meeting-free stretch is normal. Two working days of total silence is
             # not, and that is what this catches.

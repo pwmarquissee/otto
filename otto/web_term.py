@@ -42,7 +42,7 @@ from typing import Any, Callable, Protocol
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
-from . import termrelay
+from . import safeargs, termrelay
 from .termrelay import MODES, Relay, RelayError
 
 COLS = (20, 500)
@@ -130,6 +130,12 @@ def register(app: FastAPI, backend: Backend | None = None,
 
         if mode not in MODES:
             await refuse(f"mode must be control or observe, not {mode!r}")
+            return
+        # Shape before lookup. The target becomes a herdr argv element, and when
+        # herdr cannot be asked for its snapshot the lookup below is skipped, so
+        # without this a target like "--help" would reach the CLI as an option.
+        if not safeargs.is_herdr_target(target):
+            await refuse(f"not a pane id or agent name: {target[:64]!r}")
             return
         try:
             known = await blocking(be.known_targets)

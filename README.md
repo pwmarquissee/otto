@@ -43,10 +43,40 @@ repo. Only the daemon writes; the CLI, the dashboard, the hooks, and agents all 
 through the HTTP API. Writes are atomic (temp file, then `os.replace`), so a reader
 sees the whole old file or the whole new one.
 
+## Screenshots
+
+Taken from a public build running against synthetic data (two scratch herdr panes, an
+invented board). Dark theme is the only theme.
+
+![Today](docs/screenshots/today.png)
+
+**Today**: what Otto has to say, what needs you now, and where yesterday went.
+
+![Board](docs/screenshots/board.png)
+
+**Board**: every piece of outstanding work in columns; derived cards (a down integration, a schedule that never ran) sit beside the ones you filed.
+
+![Dispatch](docs/screenshots/dispatch.png)
+
+**Dispatch**: the control room; live sessions on the left, suggested card-to-session pairings, the Open lane, and the selected pane's terminal.
+
+![Terminal](docs/screenshots/terminal.png)
+
+**Terminal**: one herdr pane at full fidelity under a strip of tabs, in control or observe mode.
+
+![Grid](docs/screenshots/grid.png)
+
+**Grid**: every pane tiled live in observe mode; click a name to take it in Terminal.
+
 ## Install and first run
 
 Requirements: Python 3.13. Windows is the only platform this has been run on (see
 Status below).
+
+A fresh daemon starts with every schedule disarmed: nothing runs unattended until
+you say so. Once the integration behind a schedule is configured, arm it with
+`otto schedule arm <name>` (or set `OTTO_ARM_DEFAULT_SCHEDULES=1` before first
+start to arm the seeded read-only ones).
 
 ```
 pip install -r requirements.txt

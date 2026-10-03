@@ -92,7 +92,10 @@ def test_missing_or_promptless_transcript_gives_no_title(tmp_path):
     assert sessions.title_from_transcript(t) is None
 
 
-def test_record_titles_a_session_once_and_paul_outranks_it(store, tmp_path):
+def test_record_titles_a_session_once_and_paul_outranks_it(store, tmp_path, monkeypatch):
+    # record() now reads a transcript only under config.TRANSCRIPT_ROOTS (see
+    # sessions.transcript_allowed), so this test's transcript lives under one.
+    monkeypatch.setattr(config, "TRANSCRIPT_ROOTS", (tmp_path,))
     t = tmp_path / "a.jsonl"
     write_transcript(t, [user("first prompt")])
     s = sessions.record(store, "busy", {"session_id": "abc", "transcript_path": str(t)})

@@ -47,7 +47,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from . import config
+from . import config, safeargs
 from .models import Session, iso, utcnow
 from .store import Store
 
@@ -361,8 +361,17 @@ def notify(title: str, body: str | None = None, sound: str = "none") -> None:
 
 
 def claude_command(resume: str | None = None, extra: list[str] | None = None) -> str:
+    """The line typed into a pane shell to start claude.
+
+    This is a SHELL LINE, not argv: `pane run` types it into PowerShell. So the
+    one value that can come from outside (a session id from a request or a hook)
+    is checked against the session-id shape and refused otherwise; an id like
+    `x; Start-Process calc` would otherwise run as a second command. The config
+    args are the owner's own and are passed through as written."""
     parts = ["claude", *config.HERDR_CLAUDE_ARGS, *(extra or [])]
     if resume:
+        if not safeargs.is_session_id(resume):
+            raise HerdrError("bad_session_id", f"not a session id: {resume[:64]!r}")
         parts += ["--resume", resume]
     return " ".join(parts)
 
@@ -402,7 +411,9 @@ def launch_claude_in_pane(pane_id: str, name: str | None = None, resume: str | N
         raise HerdrError("agent_not_ready",
                          f"claude did not come up in {pane_id} within the timeout"
                          + (f" (last status {last.get('agent_status')})" if last else ""))
-    if name:
+    if name and safeargs.is_agent_name(name):
+        # A name herdr would refuse is skipped the same way a taken one is: the
+        # session is up, and a label is not worth failing the launch over.
         try:
             last = rename(pane_id, name).get("agent", last)
         except HerdrError:

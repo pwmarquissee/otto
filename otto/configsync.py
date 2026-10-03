@@ -36,15 +36,20 @@ CFG_DIR = REPO / "claude"
 SNAP_DIR = CFG_DIR / "snapshots"
 
 # name -> where the real content lives
-JUNCTIONS: dict[str, Path] = {
+# Only directories the checkout actually has are expected as junctions. A fresh
+# clone ships claude/commands and nothing else; listing agents, skills or an
+# orchestrator tree it does not have made every new install show a permanent
+# "config junction broken" gap for directories that were never meant to exist.
+_CANDIDATE_JUNCTIONS: dict[str, Path] = {
     "agents": CFG_DIR / "agents",
     "commands": CFG_DIR / "commands",
     "skills": CFG_DIR / "skills",
     "orchestrator": REPO / "orchestrator",
 }
+JUNCTIONS: dict[str, Path] = {k: v for k, v in _CANDIDATE_JUNCTIONS.items() if v.is_dir()}
 
-# Repo is the source; ~/.claude gets a copy.
-DEPLOY_FILES = ["CLAUDE.md", "s1-env.sh", "anthropic-env.sh", "cs-alert.sh"]
+# Repo is the source; ~/.claude gets a copy. Only files present in the checkout.
+DEPLOY_FILES = [f for f in ["CLAUDE.md", "anthropic-env.sh"] if (REPO / "claude" / f).is_file()]
 
 # Claude Code owns these. Repo holds a backup only.
 SNAPSHOT_FILES = ["settings.json", "settings.local.json", "config.json"]

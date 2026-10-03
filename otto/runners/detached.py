@@ -28,7 +28,7 @@ from pathlib import Path
 
 import psutil
 
-from .. import config, herdr, transcript
+from .. import config, herdr, safeargs, transcript
 from ..models import Run, iso, utcnow
 from . import herdrpane
 
@@ -55,13 +55,19 @@ def _log_path(run_id: str, name: str) -> Path:
 def _resolve_agent_md(agent: str | None) -> Path | None:
     if not agent:
         return None
+    # The name is joined into a path under ~/.claude/agents; "../x" would read any
+    # .md on disk into the session's system prompt. Unknown shape reads as "no
+    # such agent", which spawn() already reports.
+    if not safeargs.is_agent_def(agent):
+        return None
     p = config.CLAUDE_DIR / "agents" / f"{agent}.md"
     return p if p.is_file() else None
 
 
 def _ps_quote(value: str) -> str:
-    """Single-quote a string for PowerShell (doubling embedded single quotes)."""
-    return "'" + str(value).replace("'", "''") + "'"
+    """Single-quote a string for PowerShell. See safeargs.ps_quote for why the
+    typographic quotes are doubled as well as the ASCII one."""
+    return safeargs.ps_quote(value)
 
 
 def _write_launcher(

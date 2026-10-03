@@ -869,7 +869,13 @@ def set_status(store: Store, post_id: str, status: str | None = None, *,
             post.posted_at = iso(utcnow())
         post.status = status
     if url is not None:
-        post.url = url.strip() or None
+        clean = url.strip() or None
+        # The dashboard renders this as a link's href. Anything but http(s) (a
+        # javascript: or data: URL) would run in the daemon's origin on click,
+        # which is the one origin the browser guard trusts.
+        if clean and not clean.lower().startswith(("https://", "http://")):
+            raise ValueError("url must start with http:// or https://")
+        post.url = clean
     if note and note.strip():
         post.notes.append({"at": iso(utcnow()), "text": note.strip()})
     if draft is not None:

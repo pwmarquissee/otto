@@ -224,9 +224,11 @@ Then stop and wait; do not pick up other board cards on your own.
 def pane_prompt(task: Task) -> str:
     """The prompt for a logistics hand-off into a live herdr pane.
 
-    The unattended rules apply in full: the guard hook gates destructive calls the
-    same way it does for a headless run, and the owner being able to watch is not
-    the same as the owner watching. What differs is the ending: there is no Run and no JSON
+    The unattended rules apply in full in the PROMPT, because the owner being able
+    to watch is not the same as the owner watching. They are not enforced by the
+    guard hook here: scripts/otto_guard.py is a no-op without OTTO_UNATTENDED=1,
+    and a herdr pane's claude is started by herdr.claude_command without it (and
+    with --dangerously-skip-permissions by default). SECURITY.md records this. What differs is the ending: there is no Run and no JSON
     result to settle from, so the session is told to move its own card, and the
     pane watcher (logistics.watch) is the backstop if it does not.
     """

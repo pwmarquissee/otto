@@ -25,11 +25,11 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from . import (activity, advisor, board, chat, config, configsync, decisions, dedupe,
                dispatch, feeds, findings, herdr, journal, known, launch, ledger, logistics,
-               meetings,
+               meetings, safeargs,
                notify, nudges, outreach, people, persona, prep, refresh, registry,
                repos, retire, inbox, sessions, slack, spend, summon, telemetry,
                triage, verdict, wellbeing, writing)
@@ -37,6 +37,7 @@ from . import (activity, advisor, board, chat, config, configsync, decisions, de
 # date string, and a module of the same name shadowed by a local is a trap.
 from . import today as _today
 from .models import Alert, Cadence, Run, Schedule, Snapshot, Task, iso, utcnow
+from .originguard import OriginGuard, default_origins
 from .runners import detached, external, machine, scheduled
 from .runners import herdrpane
 from .store import Store
@@ -814,6 +815,12 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=f"{config.PERSONA_NAME} - {config.PERSONA_BLURB}", lifespan=lifespan)
+# First thing on the stack, so a refused browser request never reaches a route or
+# a WebSocket handler. See otto/originguard.py for what it stops and why requests
+# without an Origin (hook, CLI) still pass. Starlette builds the stack on the
+# first request, so serve() can still add a non-default port's origins below.
+app.add_middleware(OriginGuard, allowed_origins=config.ALLOWED_ORIGINS,
+                   allowed_hosts=config.ALLOWED_HOSTS)
 from . import web_term  # noqa: E402  # mounted here so the terminal routes live on the one app
 web_term.register(app)
 
@@ -1461,9 +1468,29 @@ def dismiss_proposal(proposal_id: str) -> dict[str, Any]:
     return {"ok": True, "proposal": p.model_dump()}
 
 
+def _check(ok: bool, what: str, value: Any) -> None:
+    """Field validators raise ValueError, which pydantic turns into a 422 that
+    names the field. The values here reach a herdr argv or a pane shell line."""
+    if not ok:
+        raise ValueError(f"not a valid {what}: {str(value)[:64]!r}")
+
+
+def _require_herdr_target(target: str) -> None:
+    """Path-parameter twin of the validators: a target that cannot be a pane id
+    or agent name never reaches the herdr CLI (a leading '-' would be an option)."""
+    if not safeargs.is_herdr_target(target):
+        raise HTTPException(422, f"not a pane id or agent name: {target[:64]!r}")
+
+
 class DispatchToRequest(BaseModel):
     task_id: str
     target: str   # herdr agent name or pane id
+
+    @field_validator("target")
+    @classmethod
+    def _target(cls, v: str) -> str:
+        _check(safeargs.is_herdr_target(v), "pane id or agent name", v)
+        return v
 
 
 @app.post("/api/logistics/dispatch")
@@ -1484,6 +1511,22 @@ class HerdrOpenRequest(BaseModel):
     label: str | None = None
     name: str | None = None
     resume: str | None = None   # a Claude session id to pick back up in the pane
+
+    # resume is typed into a pane shell (herdr.claude_command), so its shape is
+    # checked here as well as at the sink. name becomes the herdr agent name.
+    @field_validator("resume")
+    @classmethod
+    def _resume(cls, v: str | None) -> str | None:
+        if v:
+            _check(safeargs.is_session_id(v), "session id", v)
+        return v or None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        if v:
+            _check(safeargs.is_agent_name(v), "agent name ([a-z][a-z0-9_-]{0,31})", v)
+        return v or None
 
 
 @app.get("/api/herdr")
@@ -1525,6 +1568,29 @@ class HerdrWorktreeRequest(BaseModel):
     label: str | None = None
     name: str | None = None         # agent name once claude is up
     start_claude: bool = True
+
+    # branch and base go through herdr to git; a leading '-' would be read as an
+    # option there. path likewise must not look like a flag.
+    @field_validator("branch", "base")
+    @classmethod
+    def _ref(cls, v: str | None) -> str | None:
+        if v:
+            _check(safeargs.is_branch(v), "branch name", v)
+        return v or None
+
+    @field_validator("path")
+    @classmethod
+    def _path(cls, v: str | None) -> str | None:
+        if v:
+            _check(not v.lstrip().startswith("-"), "worktree path", v)
+        return v or None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str | None) -> str | None:
+        if v:
+            _check(safeargs.is_agent_name(v), "agent name ([a-z][a-z0-9_-]{0,31})", v)
+        return v or None
 
 
 def _worktree_response(ws_id: str, pane_id: str, req: HerdrWorktreeRequest,
@@ -1591,6 +1657,7 @@ def open_herdr_worktree(req: HerdrWorktreeRequest) -> dict[str, Any]:
 
 @app.post("/api/herdr/focus/{target}")
 def focus_in_herdr(target: str) -> dict[str, Any]:
+    _require_herdr_target(target)
     try:
         herdr.focus(target)
     except herdr.HerdrError as e:
@@ -1610,6 +1677,7 @@ _peek_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
 @app.get("/api/herdr/peek/{target}")
 def peek_herdr(target: str) -> dict[str, Any]:
+    _require_herdr_target(target)
     now = time.time()
     hit = _peek_cache.get(target)
     if hit is not None and now - hit[0] < _PEEK_TTL_SECONDS:
@@ -3143,6 +3211,14 @@ def serve(host: str | None = None, port: int | None = None, force: bool = False)
         )
     # lifespan runs inside uvicorn, so the decision has to travel via module state.
     _FORCED_START = force
+    # A --port or --host other than config's would otherwise refuse the dashboard
+    # it serves. Mutating the list in place works because the guard reads it when
+    # Starlette builds the middleware stack, on the first request.
+    for origin in default_origins(port or config.PORT, host or config.HOST):
+        if origin not in config.ALLOWED_ORIGINS:
+            config.ALLOWED_ORIGINS.append(origin)
+    if host and host not in config.ALLOWED_HOSTS and host not in ("0.0.0.0", "::"):
+        config.ALLOWED_HOSTS.append(host)
     uvicorn.run(
         app,
         host=host or config.HOST,

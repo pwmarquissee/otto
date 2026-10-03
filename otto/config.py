@@ -10,6 +10,9 @@ import os
 import sys
 from pathlib import Path
 from typing import Any, NamedTuple
+from urllib.parse import urlsplit
+
+from .originguard import default_hosts, default_origins
 
 # ---- persona ----------------------------------------------------------------
 
@@ -65,6 +68,16 @@ DOMAINS = (WORK, PERSONAL)
 HOME = Path.home()
 CLAUDE_DIR = HOME / ".claude"
 ORCHESTRATOR_DIR = CLAUDE_DIR / "orchestrator"
+# Where Claude Code writes session transcripts. A hook payload's transcript_path is
+# read only when it is under one of these (sessions.transcript_allowed): the path
+# arrives in a POST any local process can send, and reading whatever it names
+# would put the head of an arbitrary file into a session title, or, for a UNC
+# path, hand the owner's NTLM credentials to whatever SMB server it names.
+# CLAUDE_CONFIG_DIR is Claude Code's own override of ~/.claude.
+TRANSCRIPT_ROOTS = tuple(dict.fromkeys(
+    [CLAUDE_DIR / "projects"]
+    + ([Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects"]
+       if os.environ.get("CLAUDE_CONFIG_DIR") else [])))
 
 # This repo, derived from where this file sits rather than hardcoded, so a clone
 # somewhere else still resolves. Needed because a spawned session has to be told an
@@ -120,6 +133,44 @@ def profile_text() -> str:
 HOST = os.environ.get("OTTO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("OTTO_PORT", "8787"))
 BASE_URL = os.environ.get("OTTO_URL", f"http://{HOST}:{PORT}")
+
+# Who may talk to the daemon from a browser. The daemon has no authentication, so
+# a web page in any tab could otherwise drive it (otto/originguard.py has the
+# attacks). A request carrying an Origin must match ALLOWED_ORIGINS; every
+# request's Host must name one of ALLOWED_HOSTS (the DNS rebinding defense).
+# Requests with no Origin (hook, CLI, curl) are not browsers and pass. Both are
+# comma-separated and ADD to the defaults, which are the loopback names on PORT;
+# list a forwarded port's origin here, e.g. http://localhost:9000 for an SSM
+# tunnel. There is deliberately no wildcard.
+def _csv_env(name: str) -> list[str]:
+    return [v.strip() for v in os.environ.get(name, "").split(",") if v.strip()]
+
+
+def _base_url_parts() -> tuple[str | None, str | None]:
+    """(origin, hostname) of OTTO_URL, so a CLI pointed at a name the owner chose is
+    not refused by the daemon it is pointed at."""
+    try:
+        u = urlsplit(BASE_URL)
+    except ValueError:
+        return None, None
+    if not u.scheme or not u.netloc:
+        return None, None
+    return f"{u.scheme}://{u.netloc}", u.hostname
+
+
+def _allowed_origins() -> list[str]:
+    origin, _host = _base_url_parts()
+    extra = [origin] if origin else []
+    return default_origins(PORT, HOST) + extra + _csv_env("OTTO_ALLOWED_ORIGINS")
+
+
+def _allowed_hosts() -> list[str]:
+    _origin, host = _base_url_parts()
+    return default_hosts(HOST) + ([host] if host else []) + _csv_env("OTTO_ALLOWED_HOSTS")
+
+
+ALLOWED_ORIGINS = _allowed_origins()
+ALLOWED_HOSTS = _allowed_hosts()
 
 TICK_SECONDS = int(os.environ.get("OTTO_TICK", "15"))
 
@@ -666,6 +717,14 @@ REFRESH_MODEL = os.environ.get("OTTO_REFRESH_MODEL", "claude-haiku-4-5").strip()
 # different risk from running one task somebody explicitly queued.
 
 TASK_AUTODISPATCH = os.environ.get("OTTO_AUTODISPATCH", "1") not in ("0", "false", "False")
+
+# Whether the seeded read-only schedules (refresh, meeting notes, writing ideas)
+# are armed on a fresh install. OFF by default: on a brand-new daemon they fired
+# on the first tick, before the owner had looked at anything, and spawned real
+# Claude sessions against the owner's own account. OTTO_AUTODISPATCH covers board
+# tasks only, not schedules. Arm them one by one with `otto schedule arm <name>`
+# once the integrations behind them are configured.
+SCHEDULES_ARMED_BY_DEFAULT = os.environ.get("OTTO_ARM_DEFAULT_SCHEDULES", "0") in ("1", "true", "True")
 TASK_MAX_CONCURRENT = int(os.environ.get("OTTO_TASK_CONCURRENCY", "2"))
 TASK_MAX_ATTEMPTS = int(os.environ.get("OTTO_TASK_ATTEMPTS", "1"))
 TASK_MIN_SECONDS_BETWEEN = int(os.environ.get("OTTO_TASK_THROTTLE", "20"))

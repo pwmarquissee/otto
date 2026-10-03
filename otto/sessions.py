@@ -54,7 +54,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from . import config, notify, repos
+from . import config, notify, repos, safeargs
 from .models import Alert, Session, iso, safe_text, utcnow
 from .store import Store
 
@@ -321,6 +321,12 @@ def record(store: Store, state: str, payload: dict[str, Any] | None = None) -> S
     sid = str(payload.get("session_id") or "").strip()
     if not sid:
         raise ValueError("hook payload carried no session_id")
+    # The id is later typed into a shell (`claude --resume <id>`, by
+    # resume_in_terminal and herdr.claude_command), and anything that can reach
+    # loopback can post here. Refusing a bad shape at the door keeps it out of
+    # state; the sinks check again for rows written before this existed.
+    if not safeargs.is_session_id(sid):
+        raise ValueError(f"not a session id: {sid[:64]!r}")
 
     cwd = payload.get("cwd") or None
     prior = store.get_session(sid)
@@ -339,7 +345,7 @@ def record(store: Store, state: str, payload: dict[str, Any] | None = None) -> S
         sess.cwd = str(cwd)
         sess.domain = config.domain_for_path(cwd)
         sess.repo = repos.key_for(str(cwd))
-    if payload.get("transcript_path"):
+    if payload.get("transcript_path") and transcript_allowed(payload["transcript_path"]):
         sess.transcript = str(payload["transcript_path"])
     if payload.get("permission_mode"):
         sess.permission_mode = str(payload["permission_mode"])
@@ -502,7 +508,8 @@ def sweep(store: Store, now: datetime | None = None) -> list[str]:
             # the list of conversations that can be resumed, and a folder name is
             # not enough to pick one. Bounded per tick: a transcript head is cheap
             # to read but 200 of them in one tick is not.
-            if s.title is None and s.transcript and titled < 10:
+            if s.title is None and s.transcript and titled < 10 \
+                    and transcript_allowed(s.transcript):
                 found = title_from_transcript(s.transcript)
                 titled += 1
                 if found:
@@ -773,6 +780,30 @@ def process_alive(pid: int, started: float | None) -> bool:
 _TITLE_SKIP_PREFIXES = ("<local-command", "<system-reminder", "<bash-", "<user-memory")
 
 
+def transcript_allowed(path: Any) -> bool:
+    """Whether a transcript path from a hook payload may be read.
+
+    Only a .jsonl under config.TRANSCRIPT_ROOTS. Decided on the string, without
+    touching the filesystem: resolving a UNC path is itself the SMB connection
+    (and NTLM handshake) the check exists to prevent, so a path that starts with
+    two separators is refused before anything else looks at it.
+    """
+    text = str(path or "").strip()
+    if not text or text[:2].replace("\\", "/") == "//":
+        return False
+    if not text.lower().endswith(".jsonl"):
+        return False
+    full = os.path.normcase(os.path.abspath(text))
+    for root in config.TRANSCRIPT_ROOTS:
+        base = os.path.normcase(os.path.abspath(str(root)))
+        try:
+            if os.path.commonpath([full, base]) == base and full != base:
+                return True
+        except ValueError:
+            continue  # different drives on Windows: not under this root
+    return False
+
+
 def title_from_transcript(path: str | Path, max_lines: int = 400) -> tuple[str, str] | None:
     """(title, source) from the head of a Claude Code transcript, or None.
 
@@ -936,8 +967,17 @@ def resume_in_terminal(sess: Session) -> tuple[bool, str]:
     if not wt:
         return False, ("Windows Terminal (wt.exe) is not on PATH; run by hand: "
                        f"cd {sess.cwd} && claude --resume {sess.session_id}")
+    # The id becomes PowerShell source (-Command), so its shape is checked here,
+    # not trusted from state: rows predating record()'s check, or written by
+    # herdr.sync, never passed through it.
+    if not safeargs.is_session_id(sess.session_id):
+        return False, f"refusing to resume: {sess.session_id[:64]!r} is not a session id"
     title = label(sess)[:60]
-    cmd = [wt, "-w", "0", "new-tab", "-d", sess.cwd, "--title", title,
+    # wt.exe splits its own command line on ';' (see safeargs.wt_escape), and the
+    # title is the transcript's first prompt or whatever a hook said. Escaped so
+    # a title holding "; new-tab cmd /c ..." stays a title.
+    cmd = [wt, "-w", "0", "new-tab", "-d", safeargs.wt_escape(sess.cwd),
+           "--title", safeargs.wt_escape(title),
            "powershell", "-NoExit", "-Command", f"claude --resume {sess.session_id}"]
     try:
         subprocess.Popen(cmd, creationflags=getattr(subprocess, "DETACHED_PROCESS", 0),
