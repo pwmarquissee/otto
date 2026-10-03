@@ -297,9 +297,25 @@ fn main() {
             // Start with Windows, on by default, and TOGGLEABLE FROM THE TRAY. An
             // autostart entry somebody has to find in the registry to remove is a
             // thing done to a machine; a checkbox next to the icon is a setting.
+            //
+            // Enabled once, on the first launch, and never again by the shell: a
+            // marker file records that the offer was made. Before the marker, every
+            // launch re-enabled it, so turning it off from the tray lasted exactly
+            // until the next start.
             let autostart = app.autolaunch();
-            if !autostart.is_enabled().unwrap_or(false) {
-                let _ = autostart.enable();
+            let offered = app
+                .path()
+                .app_config_dir()
+                .map(|d| d.join("autostart-offered"))
+                .ok();
+            if let Some(marker) = offered.as_ref().filter(|m| !m.exists()) {
+                if !autostart.is_enabled().unwrap_or(false) {
+                    let _ = autostart.enable();
+                }
+                if let Some(parent) = marker.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let _ = std::fs::write(marker, b"");
             }
             let autostart_on = autostart.is_enabled().unwrap_or(false);
 
