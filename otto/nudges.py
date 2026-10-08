@@ -42,7 +42,7 @@ import hashlib
 import re
 from datetime import date, datetime, timedelta, timezone
 
-from . import config, notify, people, prep
+from . import config, notify
 from .store import Store
 
 # A Threads bullet as written by hand at the point of contact: "2026-07-27: I owe
@@ -76,6 +76,9 @@ def _already(store: Store, source: str, today: date, within_days: int = 1) -> bo
 
 def dated_threads(store: Store, today: date | None = None) -> list[tuple]:
     """Every dated dossier thread, as (who, iso date, days, text). Oldest first."""
+    if not config.ASSISTANT:
+        return []  # dossiers are the assistant's; the core scope has no threads
+    from . import people, prep
     today = today or datetime.now().astimezone().date()
     out: list[tuple] = []
     for p in people.load():
@@ -125,6 +128,9 @@ def thread_rows(store: Store, today: date | None = None) -> list[dict]:
     Bands are named here rather than at the call site so the notice, the dashboard
     and the CLI cannot disagree about what "quiet" means.
     """
+    if not config.ASSISTANT:
+        return []  # dossiers are the assistant's; the core scope has no threads
+    from . import people, prep
     today = today or datetime.now().astimezone().date()
     rows: list[dict] = []
     for p in people.load():

@@ -1,8 +1,10 @@
-# Daemon tests and the release guard. The desktop shell (desktop/, Tauri + Rust)
-# is not built in CI; it is Windows only and needs the MSVC toolchain and WebView2.
+# Daemon tests and the release guard on Windows and Linux, both gating. The desktop
+# shell (desktop/, Tauri + Rust) is not built in CI; it is Windows only and needs
+# the MSVC toolchain and WebView2.
 #
-# Windows is the platform Otto has run on (README, Status). The Linux job is there
-# to show what breaks off Windows, not to gate: it may fail without failing the run.
+# Dependencies come from requirements.lock (uv pip compile --universal, test extras
+# included) so a run installs the same set every time; the package itself is an
+# editable install on top, with no dependency resolution of its own.
 name: ci
 
 on:
@@ -14,18 +16,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: windows-latest
-            experimental: false
-          - os: ubuntu-latest
-            experimental: true
+        os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: pip install -r requirements-dev.txt
+      - run: pip install -r requirements.lock
+      - run: pip install -e . --no-deps
       - run: python -m pytest -q
       - run: python scripts/oss_scan.py

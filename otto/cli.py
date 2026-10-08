@@ -3709,6 +3709,10 @@ def cmd_doctor(args, client: Client) -> int:
     from .daemon import _running_daemon_pid
     ok = True
     print(_c(f"  {config.PERSONA_NAME} doctor", C_BOLD))
+    # Which half of Otto this is. A clamped value is the one misconfiguration that
+    # keeps the daemon up and quietly runs less, so it is the first line here.
+    print(f"    scope            {config.SCOPE}"
+          + (_c(f"  {config.SCOPE_WARNING}", C_YEL) if config.SCOPE_WARNING else ""))
     pid = _running_daemon_pid()
     print(f"    daemon pidfile   {'pid ' + str(pid) if pid else _c('not running', C_YEL)}")
     reachable = client.alive()
@@ -3772,6 +3776,175 @@ def cmd_say(args, client: Client) -> int:
 
 # ---- parser -----------------------------------------------------------------
 
+def _assistant_parsers(sub) -> None:
+    """The subcommands that exist only under OTTO_SCOPE=assistant: messaging
+    colleagues, dossiers and threads, meeting prep and notes, check-ins, writing.
+    One function so the parser and assistant.COMMANDS cannot drift apart; the
+    profile test checks `otto --help` against that list."""
+    s = sub.add_parser("dm", help="group DM a colleague AND the owner, as Otto, now "
+                                  "(for messages the owner asked for)")
+    s.add_argument("who", nargs="+", help="login, email, or people slug; the owner is always added")
+    s.add_argument("--text")
+    s.add_argument("--text-file", help="preferred: keeps the body off the command line")
+    s.add_argument("--why", help="what the owner asked, in a line (goes in the ledger)")
+    s.add_argument("--task", help="board task id this is for, if any")
+    s.set_defaults(fn=cmd_dm)
+
+    s = sub.add_parser("outreach", help="messages Otto wants to send other people")
+    s.add_argument("--state", choices=["held", "sent", "killed", "expired", "failed"])
+    s.add_argument("--kill", metavar="ID", help="stop a held message")
+    s.add_argument("--send", metavar="ID", help="send a held message now, skip the hold")
+    s.add_argument("--extend", metavar="ID",
+                   help="push a held message's send time back, without deciding")
+    s.add_argument("--minutes", type=int, default=10,
+                   help="how far --extend pushes it (default 10)")
+    s.add_argument("--limit", type=int, default=10)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=lambda a, c: (cmd_outreach_act(a, c)
+                                    if (a.kill or a.send or a.extend)
+                                    else cmd_outreach(a, c)),
+                   outreach_cmd=None)
+    out_sub = s.add_subparsers(dest="outreach_cmd")
+
+    # Compose only. There is deliberately no CLI path that sends without a hold:
+    # a caller that can skip the interlock is a caller with no interlock.
+    a = out_sub.add_parser("compose", help="draft a HELD message (never sends now)")
+    a.add_argument("--to", required=True, help="login, email, or name")
+    a.add_argument("--body", required=True)
+    a.add_argument("--why", required=True,
+                   help="what the owner decides on in ten seconds. Required")
+    a.add_argument("--channel", default="slack-dm",
+                   choices=["slack-dm", "slack-channel"])
+    a.add_argument("--source", default="otto")
+    a.set_defaults(fn=cmd_outreach_compose, kill=None, send=None, extend=None,
+                   minutes=10, state=None, limit=10, json=False)
+
+    a = out_sub.add_parser("resolve",
+                           help="record a colleague's Slack id (required before sending)")
+    a.add_argument("target", help="their email / login")
+    a.add_argument("--force", action="store_true", help="re-resolve an existing id")
+    a.set_defaults(fn=cmd_outreach_resolve, kill=None, send=None, extend=None,
+                   minutes=10, state=None, limit=10, json=False)
+
+    s = sub.add_parser("checkin", help="record how you are actually doing")
+    s.add_argument("text", nargs="*", help="a line or two, not a form")
+    s.add_argument("--energy", type=int, choices=[1, 2, 3, 4, 5],
+                   help="end of day, 1-5")
+    s.add_argument("--sleep", type=int, choices=[1, 2, 3, 4, 5])
+    s.add_argument("--waking", type=int, choices=[1, 2, 3, 4, 5],
+                   help="energy on waking, 1-5")
+    # One flag for the yes-list and one for the no-list, rather than a flag per
+    # signal. Anything named in neither stays UNKNOWN, which is the whole point:
+    # silence must not be recorded as a no.
+    s.add_argument("--did", metavar="a,b,c",
+                   help="signals that happened: " + "|".join(
+                       k for k in ("outside", "moved", "kayak", "connected", "known",
+                                   "made", "valued", "quiet", "doom", "obligation",
+                                   "irritable", "resentful", "self")))
+    s.add_argument("--not", metavar="a,b,c", help="signals that explicitly did not")
+    s.add_argument("--ask", action="store_true",
+                   help="walk the questions, enter to skip any")
+    s.add_argument("--date", help="ISO date, default today")
+    s.set_defaults(fn=cmd_checkin)
+
+    s = sub.add_parser("patterns", help="what actually moves your energy")
+    s.add_argument("--days", type=int, default=90)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_patterns)
+
+    s = sub.add_parser("prep", help="meeting prep: who you are about to talk to")
+    s.add_argument("who", nargs="?",
+                   help="a name, login, or slug. Defaults to your next meeting")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_prep)
+
+    s = sub.add_parser("people", help="operational dossiers per person")
+    s.add_argument("--sync", metavar="DIRECTORY_DUMP",
+                   help="regenerate frontmatter from a directory users dump (JSON); "
+                        "hand-written bodies are never touched")
+    s.add_argument("--show", metavar="LOGIN", help="print one dossier")
+    s.add_argument("--touch", action="store_true",
+                   help="apply the DM spool's contact facts to last_contact now "
+                        "(the daemon does this on its own; this is for backfill "
+                        "and debugging)")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_people, people_cmd=None)
+    ppl_sub = s.add_subparsers(dest="people_cmd")
+
+    a = ppl_sub.add_parser("note", help="append a note to a dossier section")
+    a.add_argument("slug")
+    a.add_argument("text", nargs="+")
+    a.add_argument("--section", default="Threads")
+    a.set_defaults(fn=cmd_people_note, sync=None, show=None, json=False, touch=False)
+
+    s = sub.add_parser("threads", help="every dated dossier thread, the whole list")
+    s.add_argument("--band", choices=["fresh", "quiet", "ancient"])
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_threads)
+
+    s = sub.add_parser("thread-note",
+                       help="note one thread and let Otto decide what to do")
+    s.add_argument("thread_id")
+    s.add_argument("note", nargs="+")
+    s.set_defaults(fn=cmd_thread_note)
+
+    s = sub.add_parser("thread-update",
+                       help="rewrite a thread line in place (what closes a thread)")
+    s.add_argument("thread_id")
+    s.add_argument("text", nargs="+")
+    s.set_defaults(fn=cmd_thread_update)
+
+    s = sub.add_parser("meetings", help="action items Otto took off your Notion meeting notes")
+    m_sub = s.add_subparsers(dest="meetings_cmd")
+    s.set_defaults(fn=cmd_meetings, meetings_cmd="status", json=False,
+                   no_wait=False, timeout=180)
+    s.add_argument("--json", action="store_true")
+    mi = m_sub.add_parser("ingest", help="read new meeting notes now, then report")
+    mi.add_argument("--no-wait", action="store_true")
+    mi.add_argument("--timeout", type=int, default=180)
+    mi.add_argument("--json", action="store_true")
+    mi.set_defaults(fn=cmd_meetings, meetings_cmd="ingest")
+
+    s = sub.add_parser("writing", help="post ideas from your week, drafts in your voice")
+    s.add_argument("--all", action="store_true", help="include dropped ideas")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_writing, writing_cmd=None)
+    wr_sub = s.add_subparsers(dest="writing_cmd")
+
+    a = wr_sub.add_parser("ideas", help="mine the last week for post ideas now")
+    a.add_argument("--no-wait", action="store_true")
+    a.add_argument("--timeout", type=int, default=240)
+    a.set_defaults(fn=cmd_writing, all=False, json=False)
+
+    a = wr_sub.add_parser("draft", help="draft a post from an idea, or redraft it with a note")
+    a.add_argument("id")
+    a.add_argument("--note", help="what to change, in your words")
+    a.add_argument("--from-file", help="your edited draft; it becomes the text the run revises")
+    a.add_argument("--no-wait", action="store_true")
+    a.add_argument("--timeout", type=int, default=240)
+    a.set_defaults(fn=cmd_writing, all=False, json=False)
+
+    a = wr_sub.add_parser("edit", help="open the draft in $EDITOR (or notepad); saved as your edit")
+    a.add_argument("id")
+    a.set_defaults(fn=cmd_writing, all=False, json=False)
+
+    a = wr_sub.add_parser("show", help="one post in full, with what the scan flagged")
+    a.add_argument("id")
+    a.add_argument("--json", action="store_true")
+    a.set_defaults(fn=cmd_writing, all=False)
+
+    a = wr_sub.add_parser("set", help="mark it posted or dropped, record the link, add a note")
+    a.add_argument("id")
+    a.add_argument("--status", choices=["idea", "drafted", "posted", "dropped"])
+    a.add_argument("--url")
+    a.add_argument("--note", nargs="+")
+    a.add_argument("--draft-file", help="replace the draft with this file's text (re-scanned)")
+    a.set_defaults(fn=cmd_writing, all=False, json=False)
+
+    a = wr_sub.add_parser("voice", help="where your voice file is; seeds it if missing")
+    a.set_defaults(fn=cmd_writing, all=False, json=False)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="otto",
@@ -3807,15 +3980,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--text")
     s.add_argument("--text-file", help="preferred: keeps the body off the command line")
     s.set_defaults(fn=cmd_tell)
-
-    s = sub.add_parser("dm", help="group DM a colleague AND the owner, as Otto, now "
-                                  "(for messages the owner asked for)")
-    s.add_argument("who", nargs="+", help="login, email, or people slug; the owner is always added")
-    s.add_argument("--text")
-    s.add_argument("--text-file", help="preferred: keeps the body off the command line")
-    s.add_argument("--why", help="what the owner asked, in a line (goes in the ledger)")
-    s.add_argument("--task", help="board task id this is for, if any")
-    s.set_defaults(fn=cmd_dm)
 
     s = sub.add_parser("priorities", help="what matters right now, and how stale it is")
     s.add_argument("--init", action="store_true", help="write a starter file")
@@ -3866,7 +4030,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--cwd")
     s.add_argument("--agent", help="subagent definition from ~/.claude/agents")
     s.add_argument("--mode", choices=["headless", "windowed"], default="headless")
-    s.add_argument("--task", help="Notion ETS-N id")
+    s.add_argument("--task", help="external queue id")
     s.add_argument("--tier")
     s.add_argument("--safe", action="store_true",
                    help="do NOT pass --dangerously-skip-permissions")
@@ -3953,42 +4117,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_notices)
 
-    s = sub.add_parser("outreach", help="messages Otto wants to send other people")
-    s.add_argument("--state", choices=["held", "sent", "killed", "expired", "failed"])
-    s.add_argument("--kill", metavar="ID", help="stop a held message")
-    s.add_argument("--send", metavar="ID", help="send a held message now, skip the hold")
-    s.add_argument("--extend", metavar="ID",
-                   help="push a held message's send time back, without deciding")
-    s.add_argument("--minutes", type=int, default=10,
-                   help="how far --extend pushes it (default 10)")
-    s.add_argument("--limit", type=int, default=10)
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=lambda a, c: (cmd_outreach_act(a, c)
-                                    if (a.kill or a.send or a.extend)
-                                    else cmd_outreach(a, c)),
-                   outreach_cmd=None)
-    out_sub = s.add_subparsers(dest="outreach_cmd")
-
-    # Compose only. There is deliberately no CLI path that sends without a hold:
-    # a caller that can skip the interlock is a caller with no interlock.
-    a = out_sub.add_parser("compose", help="draft a HELD message (never sends now)")
-    a.add_argument("--to", required=True, help="login, email, or name")
-    a.add_argument("--body", required=True)
-    a.add_argument("--why", required=True,
-                   help="what the owner decides on in ten seconds. Required")
-    a.add_argument("--channel", default="slack-dm",
-                   choices=["slack-dm", "slack-channel"])
-    a.add_argument("--source", default="otto")
-    a.set_defaults(fn=cmd_outreach_compose, kill=None, send=None, extend=None,
-                   minutes=10, state=None, limit=10, json=False)
-
-    a = out_sub.add_parser("resolve",
-                           help="record a colleague's Slack id (required before sending)")
-    a.add_argument("target", help="their email / login")
-    a.add_argument("--force", action="store_true", help="re-resolve an existing id")
-    a.set_defaults(fn=cmd_outreach_resolve, kill=None, send=None, extend=None,
-                   minutes=10, state=None, limit=10, json=False)
-
     s = sub.add_parser("notify", help="send the owner a message (for agents/schedules)")
     s.add_argument("title", nargs="+")
     s.add_argument("--body")
@@ -4003,32 +4131,6 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--refresh", action="store_true", help="recompute the rollup")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_day)
-
-    s = sub.add_parser("checkin", help="record how you are actually doing")
-    s.add_argument("text", nargs="*", help="a line or two, not a form")
-    s.add_argument("--energy", type=int, choices=[1, 2, 3, 4, 5],
-                   help="end of day, 1-5")
-    s.add_argument("--sleep", type=int, choices=[1, 2, 3, 4, 5])
-    s.add_argument("--waking", type=int, choices=[1, 2, 3, 4, 5],
-                   help="energy on waking, 1-5")
-    # One flag for the yes-list and one for the no-list, rather than a flag per
-    # signal. Anything named in neither stays UNKNOWN, which is the whole point:
-    # silence must not be recorded as a no.
-    s.add_argument("--did", metavar="a,b,c",
-                   help="signals that happened: " + "|".join(
-                       k for k in ("outside", "moved", "kayak", "connected", "known",
-                                   "made", "valued", "quiet", "doom", "obligation",
-                                   "irritable", "resentful", "self")))
-    s.add_argument("--not", metavar="a,b,c", help="signals that explicitly did not")
-    s.add_argument("--ask", action="store_true",
-                   help="walk the questions, enter to skip any")
-    s.add_argument("--date", help="ISO date, default today")
-    s.set_defaults(fn=cmd_checkin)
-
-    s = sub.add_parser("patterns", help="what actually moves your energy")
-    s.add_argument("--days", type=int, default=90)
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_patterns)
 
     s = sub.add_parser("machine", help="this workstation, informational only")
     s.add_argument("--json", action="store_true")
@@ -4076,7 +4178,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "the text quotes a command line or detection evidence")
     a.add_argument("--agent", help="subagent type to dispatch to")
     a.add_argument("--tags", help="comma separated")
-    a.add_argument("--ref", help="real Notion ETS-N id, when mirroring one")
+    a.add_argument("--ref", help="the external queue's id, when mirroring one")
     a.add_argument("--due")
     a.add_argument("--cwd", help="working directory for the spawned session")
     a.add_argument("--no-auto", action="store_true",
@@ -4451,12 +4553,6 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("name")
     a.set_defaults(fn=cmd_known)
 
-    s = sub.add_parser("prep", help="meeting prep: who you are about to talk to")
-    s.add_argument("who", nargs="?",
-                   help="a name, login, or slug. Defaults to your next meeting")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_prep)
-
     s = sub.add_parser("retire", help="what Otto should stop doing (deletes nothing)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_retire)
@@ -4474,53 +4570,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="evaluate CONFORMANCE.md assertions (all, or one definition)")
     a.add_argument("--json", action="store_true")
     a.set_defaults(fn=cmd_skills_audit)
-
-    s = sub.add_parser("people", help="operational dossiers per person")
-    s.add_argument("--sync", metavar="DIRECTORY_DUMP",
-                   help="regenerate frontmatter from a directory users dump (JSON); "
-                        "hand-written bodies are never touched")
-    s.add_argument("--show", metavar="LOGIN", help="print one dossier")
-    s.add_argument("--touch", action="store_true",
-                   help="apply the DM spool's contact facts to last_contact now "
-                        "(the daemon does this on its own; this is for backfill "
-                        "and debugging)")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_people, people_cmd=None)
-    ppl_sub = s.add_subparsers(dest="people_cmd")
-
-    a = ppl_sub.add_parser("note", help="append a note to a dossier section")
-    a.add_argument("slug")
-    a.add_argument("text", nargs="+")
-    a.add_argument("--section", default="Threads")
-    a.set_defaults(fn=cmd_people_note, sync=None, show=None, json=False, touch=False)
-
-    s = sub.add_parser("threads", help="every dated dossier thread, the whole list")
-    s.add_argument("--band", choices=["fresh", "quiet", "ancient"])
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_threads)
-
-    s = sub.add_parser("thread-note",
-                       help="note one thread and let Otto decide what to do")
-    s.add_argument("thread_id")
-    s.add_argument("note", nargs="+")
-    s.set_defaults(fn=cmd_thread_note)
-
-    s = sub.add_parser("thread-update",
-                       help="rewrite a thread line in place (what closes a thread)")
-    s.add_argument("thread_id")
-    s.add_argument("text", nargs="+")
-    s.set_defaults(fn=cmd_thread_update)
-
-    s = sub.add_parser("meetings", help="action items Otto took off your Notion meeting notes")
-    m_sub = s.add_subparsers(dest="meetings_cmd")
-    s.set_defaults(fn=cmd_meetings, meetings_cmd="status", json=False,
-                   no_wait=False, timeout=180)
-    s.add_argument("--json", action="store_true")
-    mi = m_sub.add_parser("ingest", help="read new meeting notes now, then report")
-    mi.add_argument("--no-wait", action="store_true")
-    mi.add_argument("--timeout", type=int, default=180)
-    mi.add_argument("--json", action="store_true")
-    mi.set_defaults(fn=cmd_meetings, meetings_cmd="ingest")
 
     s = sub.add_parser("refresh", help="pull calendar + mail via MCP, per domain")
     s.add_argument("--domain", choices=config.DOMAINS,
@@ -4551,45 +4600,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = cf_sub.add_parser("backup", help="copy every authored file to a timestamped dir")
     a.set_defaults(fn=cmd_config, json=False, dry_run=False)
-
-    s = sub.add_parser("writing", help="post ideas from your week, drafts in your voice")
-    s.add_argument("--all", action="store_true", help="include dropped ideas")
-    s.add_argument("--json", action="store_true")
-    s.set_defaults(fn=cmd_writing, writing_cmd=None)
-    wr_sub = s.add_subparsers(dest="writing_cmd")
-
-    a = wr_sub.add_parser("ideas", help="mine the last week for post ideas now")
-    a.add_argument("--no-wait", action="store_true")
-    a.add_argument("--timeout", type=int, default=240)
-    a.set_defaults(fn=cmd_writing, all=False, json=False)
-
-    a = wr_sub.add_parser("draft", help="draft a post from an idea, or redraft it with a note")
-    a.add_argument("id")
-    a.add_argument("--note", help="what to change, in your words")
-    a.add_argument("--from-file", help="your edited draft; it becomes the text the run revises")
-    a.add_argument("--no-wait", action="store_true")
-    a.add_argument("--timeout", type=int, default=240)
-    a.set_defaults(fn=cmd_writing, all=False, json=False)
-
-    a = wr_sub.add_parser("edit", help="open the draft in $EDITOR (or notepad); saved as your edit")
-    a.add_argument("id")
-    a.set_defaults(fn=cmd_writing, all=False, json=False)
-
-    a = wr_sub.add_parser("show", help="one post in full, with what the scan flagged")
-    a.add_argument("id")
-    a.add_argument("--json", action="store_true")
-    a.set_defaults(fn=cmd_writing, all=False)
-
-    a = wr_sub.add_parser("set", help="mark it posted or dropped, record the link, add a note")
-    a.add_argument("id")
-    a.add_argument("--status", choices=["idea", "drafted", "posted", "dropped"])
-    a.add_argument("--url")
-    a.add_argument("--note", nargs="+")
-    a.add_argument("--draft-file", help="replace the draft with this file's text (re-scanned)")
-    a.set_defaults(fn=cmd_writing, all=False, json=False)
-
-    a = wr_sub.add_parser("voice", help="where your voice file is; seeds it if missing")
-    a.set_defaults(fn=cmd_writing, all=False, json=False)
 
     s = sub.add_parser("serve", help="run the daemon + dashboard")
     s.add_argument("--host")
@@ -4630,6 +4640,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("say", help="render current status in Otto's voice")
     s.set_defaults(fn=cmd_say)
 
+    if config.ASSISTANT:
+        _assistant_parsers(sub)
     return p
 
 

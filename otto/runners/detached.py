@@ -8,8 +8,10 @@ so an agent that dies, hangs, or never reports is visible instead of lost.
 Two modes:
   headless     `claude -p` with stdout/stderr piped to a log file. Default,
                because it is the mode that actually produces observability.
-  windowed     a visible PowerShell console that tees to the same log. Use when
+  windowed     a visible console (Windows) that tees to the same log. Use when
                a human wants to watch or interact with the session.
+
+The per-run script itself, and the shell that runs it, are otto/launcher.py's.
 
 PID reuse is real on Windows, so a run stores both pid and the process
 create_time. Liveness requires both to match before Otto believes the process
@@ -28,7 +30,7 @@ from pathlib import Path
 
 import psutil
 
-from .. import config, herdr, safeargs, transcript
+from .. import config, herdr, launcher, safeargs, transcript
 from ..models import Run, iso, utcnow
 from . import herdrpane
 
@@ -64,12 +66,6 @@ def _resolve_agent_md(agent: str | None) -> Path | None:
     return p if p.is_file() else None
 
 
-def _ps_quote(value: str) -> str:
-    """Single-quote a string for PowerShell. See safeargs.ps_quote for why the
-    typographic quotes are doubled as well as the ASCII one."""
-    return safeargs.ps_quote(value)
-
-
 def _write_launcher(
     run_id: str,
     name: str,
@@ -84,50 +80,47 @@ def _write_launcher(
     model: str | None = None,
     local_mcp: bool = True,
 ) -> Path:
-    """Generate a per-run PowerShell launcher.
+    """Describe this run's `claude` invocation and write its launcher script.
 
     Why a script instead of a direct argv: on Windows `claude` is an npm shim
     (claude.CMD), which CreateProcess cannot invoke reliably, and both the prompt
     and an --append-system-prompt agent definition are far too long and too full
     of quotes to survive a command line. The launcher reads both from disk, so
     nothing large or quoted ever crosses a process boundary as an argument.
+    otto/launcher.py renders the script for the platform.
     """
-    lines = [
-        "$ErrorActionPreference = 'Continue'",
-        f"Set-Location -LiteralPath {_ps_quote(cwd)}",
-        f"$prompt = Get-Content -LiteralPath {_ps_quote(prompt_file)} -Raw",
-        "$claudeArgs = @('-p')",
-    ]
+    env: dict[str, str] = {}
+    args: list[str] = ["-p"]
     if mode != "windowed":
         # Headless means nobody is watching, and scripts/otto_guard.py keys off
         # exactly that: with this set, the PreToolUse hook refuses outreach sends
         # and credential checkout no matter what permission flags the session holds
-        # (the owner's call, 2026-08-07). Windowed sessions have a human present, so they are
-        # deliberately not marked.
-        lines.append("$env:OTTO_UNATTENDED = '1'")
+        # (the owner's call, 2026-08-07). Windowed sessions have a human present, so
+        # they are deliberately not marked.
+        env["OTTO_UNATTENDED"] = "1"
         # Named so the guard's approval dialog can say WHICH run is asking
         # (since 2026-08-18 gated actions raise a modal instead of a flat
         # deny, and an unlabeled yes/no about a credential is unanswerable).
-        lines.append(f"$env:OTTO_RUN_NAME = {_ps_quote(name)}")
+        env["OTTO_RUN_NAME"] = name
         # The id, for provenance: `otto dm` records it against the message it sends
         # and outreach.directed keys its per-run brake on it.
-        lines.append(f"$env:OTTO_RUN_ID = {_ps_quote(run_id)}")
+        env["OTTO_RUN_ID"] = run_id
         # stream-json, not json. Plain `json` buffers everything and writes one
         # object at exit, so the log is EMPTY for the entire life of the run and
         # "watch a running agent" is impossible. stream-json emits an NDJSON event
         # per step as it happens, and its final line is still the same
         # {"type":"result"} object, so harvesting is unaffected.
         # --verbose is required for stream-json under --print.
-        lines.append("$claudeArgs += @('--output-format', 'stream-json', '--verbose')")
+        args += ["--output-format", "stream-json", "--verbose"]
         if budget_usd:
-            lines.append(f"$claudeArgs += @('--max-budget-usd', '{budget_usd}')")
+            args += ["--max-budget-usd", str(budget_usd)]
     if model:
         # Per-run model choice, because the floor cost of a session is not the same
         # for every job. A spawned session pays ~38k cache-creation tokens for its
         # system context before it does anything, so a small bounded task (pick one
         # of four verbs, run one command) costs the same as a hard one on a premium
         # model. Letting the caller pick makes the cheap jobs cheap.
-        lines.append(f"$claudeArgs += @('--model', {_ps_quote(model)})")
+        args += ["--model", model]
     if not local_mcp:
         # An EMPTY config plus --strict-mcp-config, which is what drops the local
         # servers. Deliberately not a subset mechanism: naming servers to keep would
@@ -140,10 +133,9 @@ def _write_launcher(
         # money here (outreach.py's SEND_TOOL comment learned this the same way).
         empty = config.LOG_DIR / f"{run_id[:6]}-{name}.mcp.json"
         empty.write_text('{"mcpServers":{}}', encoding="utf-8")
-        lines.append("$claudeArgs += @('--strict-mcp-config', '--mcp-config', "
-                     f"{_ps_quote(empty)})")
+        args += ["--strict-mcp-config", "--mcp-config", str(empty)]
     if skip_permissions:
-        lines.append("$claudeArgs += '--dangerously-skip-permissions'")
+        args.append("--dangerously-skip-permissions")
     # ONE file, passed by PATH with --append-system-prompt-file, never by value.
     #
     # It used to be two --append-system-prompt arguments carrying the text itself.
@@ -167,18 +159,14 @@ def _write_launcher(
     if parts:
         extra_file = config.LOG_DIR / f"{run_id[:6]}-{name}.sysextra.txt"
         extra_file.write_text("\n\n".join(parts), encoding="utf-8")
-        lines.append(f"$claudeArgs += @('--append-system-prompt-file', {_ps_quote(extra_file)})")
+        args += ["--append-system-prompt-file", str(extra_file)]
 
-    invoke = "$prompt | & claude @claudeArgs"
-    if mode == "windowed":
+    spec = launcher.ClaudeSpec(
+        cwd=str(cwd), prompt_file=prompt_file, args=tuple(args), env=env,
         # Visible console: tee so the human watches live and Otto still gets a log.
-        invoke += f" 2>&1 | Tee-Object -FilePath {_ps_quote(log)}"
-    lines.append(invoke)
-    lines.append("exit $LASTEXITCODE")
-
-    launcher = config.LOG_DIR / f"{run_id[:6]}-{name}.launch.ps1"
-    launcher.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return launcher
+        tee_log=log if mode == "windowed" else None,
+    )
+    return launcher.write_claude(config.LOG_DIR / f"{run_id[:6]}-{name}", spec)
 
 
 def spawn(
@@ -216,12 +204,11 @@ def spawn(
     if agent and agent_md is None:
         raise ValueError(f"no agent definition at ~/.claude/agents/{agent}.md")
 
-    launcher = _write_launcher(
+    script = _write_launcher(
         run_id, safe_name, cwd, prompt_file, agent_md, log, mode, skip_permissions,
         budget_usd, system_extra, model, local_mcp,
     )
 
-    base = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
     notes = f"mode={mode}" + (f" agent={agent}" if agent else "")
     pid: int | None = None
     pane_id: str | None = None
@@ -247,12 +234,10 @@ def spawn(
                 if not launched.prompted:
                     notes += f" | {launched.note}"
             else:
-                inner = ("[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); "
-                         f"& {_ps_quote(launcher)}; exit $LASTEXITCODE")
-                cmd = base + ["-Command", inner]
+                cmd = launcher.pane_command(script)
                 launched = herdrpane.launch_in_pane(
                     cmd, cwd, log, _run_env(run_id, name, mode), label=name,
-                    match=str(launcher))
+                    match=str(script))
             pid, pane_id, workspace_id = launched.pid, launched.pane_id, launched.workspace_id
             notes += " | pane"
             if launched.note:
@@ -266,10 +251,10 @@ def spawn(
 
     if pane_id is None:
         if mode == "windowed":
-            cmd = base + ["-NoExit", "-File", str(launcher)]
+            cmd = launcher.command(script, keep_open=True)
             proc = subprocess.Popen(cmd, cwd=cwd, creationflags=_FLAGS_WINDOWED)
         else:
-            cmd = base + ["-File", str(launcher)]
+            cmd = launcher.command(script)
             fh = log.open("w", encoding="utf-8", errors="replace")
             try:
                 proc = subprocess.Popen(

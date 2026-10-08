@@ -28,22 +28,27 @@ More screenshots: [Setup](docs/screenshots/setup.png), [Today](docs/screenshots/
 Python 3.13. Windows is the only platform it has run on so far.
 
 ```
-pip install -r requirements.txt
-python -m otto serve
+pip install -e .
+otto serve
 ```
 
 Open http://127.0.0.1:8787. A fresh daemon opens on a setup checklist: your name and
 project folders, the Claude Code hooks, herdr if you want it, which services to
 probe, a first card, which schedules to arm. Each step can be skipped. The same
-thing in a terminal is `python -m otto setup`.
+thing in a terminal is `otto setup`.
 
 Settings land in `~/.claude/otto/otto.env`. Environment variables override the file.
 `.env.example` lists everything. Nothing talks to an outside service unless you
 configure it.
 
-To keep the daemon alive across reboots on Windows, run
-`scripts/Install-OttoDaemon.ps1`. `scripts/otto.ps1` lets you type `otto` instead
-of `python -m otto`.
+What you get by default is the orchestrator. `OTTO_SCOPE=assistant` in `otto.env`
+adds the assistant half (outreach, writing, people, prep, wellbeing, summon, inbox,
+meetings); under the default `core` scope none of it is loaded. See
+[docs/how-it-works.md](docs/how-it-works.md#scopes).
+
+`pip install -e .` puts `otto` on PATH; `python -m otto` is the same thing.
+`requirements.lock` is the pinned set CI installs from. To keep the daemon alive
+across reboots on Windows, run `scripts/Install-OttoDaemon.ps1`.
 
 ## Using it
 
@@ -63,17 +68,21 @@ bar.
 
 ## Unattended runs
 
-Otto can run Claude Code without you watching, so the limits are code rather than
-prompt text. Cards go through a promotion gate with tiers. Autorun has a master
-switch, a budget per run, one unattended schedule at a time, and a breaker that
-disarms a schedule after three failures. A `PreToolUse` hook puts destructive
-commands behind a desktop dialog in unattended sessions. Details in
-[docs/how-it-works.md](docs/how-it-works.md) and [SECURITY.md](SECURITY.md).
+Otto can run Claude Code without you watching, so the limits that matter are
+enforced in Python, not in prompt text: cards go through a promotion gate with
+tiers, autorun has a master switch, a budget per run, one unattended schedule at a
+time, and a breaker that disarms a schedule after three failures. Inside a session
+the only control is a `PreToolUse` hook that pattern-matches tool input and puts
+destructive-looking commands behind a desktop dialog. That hook is a seatbelt that
+catches mistakes, not a sandbox; [SECURITY.md](SECURITY.md) lists the ways around
+it. Details in [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Limits
 
-- Tested on Windows. The daemon is plain Python, but process handling, toasts, and
-  the desktop shell are Windows code. CI runs Linux as informational.
+- Lived on Windows. The daemon and the per-run launcher it writes have a POSIX
+  backend and CI gates on Linux as well as Windows, but toasts, the scheduled-task
+  installer, and the desktop shell are Windows code and nothing has run a real
+  Claude Code session from Otto on Linux yet.
 - The desktop shell (`desktop/`, Tauri) is Windows only and not built in CI.
 - Written against herdr 0.9.3.
 - Slack, mail, calendar, meeting notes, and the writing tools need MCP connectors
@@ -82,12 +91,14 @@ commands behind a desktop dialog in unattended sessions. Details in
 ## Tests
 
 ```
-pip install -r requirements-dev.txt
+pip install -e .[dev]
 python -m pytest
 python scripts/oss_scan.py
 ```
 
-The suite runs against a temporary state directory and never touches yours.
+The suite runs against a temporary state directory and never writes to yours. It
+reads the machine's process list the way `otto status` does, so a live Claude Code
+session on the box can show up in a test's view of the world.
 `oss_scan.py` is the release guard; it fails on anything that looks private.
 
 ## Credits

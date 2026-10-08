@@ -1,7 +1,7 @@
 # Tests
 
 ```
-pip install -r requirements-dev.txt
+pip install -e .[dev]
 python -m pytest                          # everything
 python -m pytest tests/test_store.py -v   # one file
 python -m pytest -k priorities            # by name

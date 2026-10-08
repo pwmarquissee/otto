@@ -15,6 +15,7 @@ thread, no herdr autostart, and no real state: conftest's sandbox holds.
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import sys
@@ -24,7 +25,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from otto import config, daemon, herdr, safeargs, sessions, web_term, writing
+from otto import config, daemon, herdr, launcher, safeargs, sessions, web_term, writing
 from otto.models import Session
 from otto.originguard import OriginGuard, hostname_of
 from otto.runners import detached, herdrpane
@@ -301,13 +302,27 @@ def test_ps_quote_is_inert_in_real_powershell(tmp_path):
     assert lines == [hostile]
 
 
-def test_pane_tee_script_quotes_a_hostile_run_name(tmp_path):
+def test_pane_tee_script_quotes_a_hostile_run_name(tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "WINDOWS", True)
     name = "fix\u2019; Start-Process calc; \u2019"
     script = herdrpane._tee_script(["claude", "-p"], tmp_path / "r.log",
                                    {"OTTO_RUN_NAME": name})
     text = script.read_text(encoding="utf-8")
     assert f"$env:OTTO_RUN_NAME = {safeargs.ps_quote(name)}" in text
     assert "\u2019; Start" not in text.replace("\u2019\u2019", "")
+
+
+def test_bash_pane_script_quotes_a_hostile_run_name(tmp_path, monkeypatch):
+    """The bash form: a name carrying a quote, a semicolon and two subshells is
+    one shlex-quoted word, so nothing in it reaches the shell as syntax."""
+    monkeypatch.setattr(launcher, "WINDOWS", False)
+    name = "fix'; rm -rf /; $(calc) `calc` \u2019"
+    script = herdrpane._tee_script(["claude", "-p"], tmp_path / "r.log",
+                                   {"OTTO_RUN_NAME": name})
+    lines = script.read_text(encoding="utf-8").splitlines()
+    assert f"export OTTO_RUN_NAME={shlex.quote(name)}" in lines
+    exported = next(x for x in lines if x.startswith("export OTTO_RUN_NAME="))
+    assert shlex.split(exported.removeprefix("export ")) == [f"OTTO_RUN_NAME={name}"]
 
 
 def test_pane_tee_script_refuses_a_bad_env_name(tmp_path):

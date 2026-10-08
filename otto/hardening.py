@@ -1,7 +1,7 @@
 """Per-definition blast radius: what a definition may write, and whether it says so.
 
-Stolen from Gaia (2026-08-03), where several skills ship HARDENING.md and
-CONFORMANCE.md alongside SKILL.md. Otto had 144 definitions and zero of either.
+The pattern comes from an earlier, private assistant of the author's, where several
+skills ship HARDENING.md and CONFORMANCE.md alongside SKILL.md. Otto had 144 definitions and zero of either.
 
 Why Otto specifically needs this. The cold-start incident: a task left in `queued`
 from testing was auto-dispatched, and the agent edited `daily.md` -- a live ops file
@@ -48,7 +48,7 @@ REPO = Path(__file__).resolve().parent.parent
 # This is not a style choice: ~/.claude/{commands,agents} is junctioned to the repo
 # and Claude Code registers EVERY .md in those trees. A `daily.HARDENING.md` sibling
 # would become a slash command called `/daily.HARDENING`. Skills are directories and
-# only SKILL.md is read, so skill docs co-locate the way Gaia's do.
+# only SKILL.md is read, so skill docs co-locate with the skill.
 SIDECAR_ROOT = REPO / "claude" / "hardening"
 TEMPLATE_DIR = SIDECAR_ROOT / "_templates"
 

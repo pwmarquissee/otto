@@ -15,6 +15,12 @@ going on before they arm a schedule.
                               ~/.claude/otto/state/*.json
                               ~/.claude/otto/logs/*.log
 
+  api/       one router per area (state, runs, sessions, schedules, tasks,
+             slack, setup, decisions, telemetry, chat, system, static);
+             daemon.py holds the process, the tick loop and the app
+  cli/       one module per verb group; cli/__init__.py assembles the parser
+  web/js/    the dashboard as ordered classic scripts (00-shell.js states
+             the load order); no build step
   runners/   detached    spawn and track headless Claude Code runs
              scheduled   cadence and staleness evaluation
              external    read-only liveness probes for integrations
@@ -147,9 +153,21 @@ is what Otto's hooks key sessions on, so a pane and a session are the same thing
 - The daemon outlives the window. Closing the desktop window hides it; Quit from the
   tray leaves the daemon running. `otto stop` is a separate act.
 
+## Scopes
+
+`OTTO_SCOPE=core` (the default) is the orchestrator this document describes: board,
+sessions, dispatch, schedules, hooks, ledger, runs, feeds, decisions, journal,
+nudges, priorities, retire, chat, refresh, today. `OTTO_SCOPE=assistant` adds the
+owner's assistant modules (`outreach`, `writing`, `people`, `prep`, `wellbeing`,
+`summon`, `inbox`, `meetings`): their routes, their tick hooks, their schedules and
+their subcommands. Under core none of them is imported, mounted or seeded; the
+boundary is `otto/assistant/` and `tests/test_scope.py` holds it from a subprocess.
+It is a switch rather than a pip extra because the assistant needs no package the
+core lacks; what differs is what the daemon loads.
+
 ## CLI
 
-`python -m otto <verb>`. Grouped:
+`otto <verb>` (`python -m otto` is the same). Grouped:
 
 - Look: `status`, `next`, `gaps`, `board`, `live`, `runs`, `logs`, `watch`, `events`,
   `agenda`, `notices`, `day`, `spend`, `ledger`, `priorities`, `machine`, `say`
@@ -165,10 +183,12 @@ is what Otto's hooks key sessions on, so a pane and a session are the same thing
   `probe`, `identity`, `manifest`, `registry`, `scan`, `feeds`,
   `config status|deploy|adopt|snapshot|backup`, `telemetry status|install|uninstall`,
   `migrate`
-- Optional subsystems (each needs its integration configured): `chat`, `refresh`,
-  `meetings ingest`, `prep`, `people [note]`, `threads`, `thread-note`,
-  `thread-update`, `outreach [compose|resolve]`, `notify`, `reply`, `post`, `tell`,
-  `dm`, `checkin`, `patterns`, `skills audit`, `writing ideas|draft|edit|show|set|voice`
+- Core, needing an integration configured: `chat`, `refresh`, `notify`, `reply`,
+  `post`, `tell`, `skills audit`
+- Assistant scope only (`OTTO_SCOPE=assistant`): `meetings ingest`, `prep`,
+  `people [note]`, `threads`, `thread-note`, `thread-update`,
+  `outreach [compose|resolve]`, `dm`, `checkin`, `patterns`,
+  `writing ideas|draft|edit|show|set|voice`
 
 ## More
 

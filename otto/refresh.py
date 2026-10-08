@@ -23,7 +23,7 @@ from pathlib import Path
 
 import psutil
 
-from . import config
+from . import config, launcher
 from .models import Run, Snapshot, iso, utcnow
 from .runners import detached
 from .store import Store
@@ -92,23 +92,16 @@ Mail triage (this is the part that matters most):
 
 
 def _launcher(run_id: str, prompt_file: Path, domain: str) -> Path:
-    q = detached._ps_quote
     denied = DENIED_TOOLS + list(config.REFRESH_SOURCES.get(domain, {}).get("deny") or [])
     model = config.REFRESH_MODEL or config.DEFAULT_MODEL
-    lines = [
-        "$ErrorActionPreference = 'Continue'",
-        f"Set-Location -LiteralPath {q(config.CHAT_CWD)}",
-        f"$prompt = Get-Content -LiteralPath {q(prompt_file)} -Raw",
-        "$claudeArgs = @('-p', '--output-format', 'stream-json', '--verbose')",
-        "$claudeArgs += '--dangerously-skip-permissions'",
-        f"$claudeArgs += @('--disallowed-tools', {q(' '.join(denied))})",
-        *([f"$claudeArgs += @('--model', {q(model)})"] if model else []),
-        "$prompt | & claude @claudeArgs",
-        "exit $LASTEXITCODE",
-    ]
-    p = config.LOG_DIR / f"{run_id[:6]}-refresh.launch.ps1"
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
+    args = ["-p", "--output-format", "stream-json", "--verbose",
+            "--dangerously-skip-permissions",
+            "--disallowed-tools", " ".join(denied)]
+    if model:
+        args += ["--model", model]
+    return launcher.write_claude(
+        config.LOG_DIR / f"{run_id[:6]}-refresh",
+        launcher.ClaudeSpec(cwd=str(config.CHAT_CWD), prompt_file=prompt_file, args=tuple(args)))
 
 
 def start(store: Store, domain: str = config.WORK) -> Run:
@@ -137,8 +130,7 @@ def start(store: Store, domain: str = config.WORK) -> Run:
                            encoding="utf-8")
     log = config.LOG_DIR / f"{run_id[:6]}-refresh.log"
 
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-           "-File", str(_launcher(run_id, prompt_file, domain))]
+    cmd = launcher.command(_launcher(run_id, prompt_file, domain))
     fh = log.open("w", encoding="utf-8", errors="replace")
     try:
         proc = subprocess.Popen(

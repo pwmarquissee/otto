@@ -287,6 +287,7 @@ def test_probe_herdr_is_in_the_sweep_and_a_raise_does_not_stop_it(monkeypatch):
         raise RuntimeError("binary vanished")
 
     monkeypatch.setattr(external, "PROBES", [boom, external.probe_herdr])
+    monkeypatch.setattr(config, "INTEGRATIONS", ("boom", "herdr"))
     monkeypatch.setattr(herdr, "available", lambda: False)
     rows = external.probe_all()
     assert [r.name for r in rows] == ["boom", "herdr"]

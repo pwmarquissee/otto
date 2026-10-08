@@ -19,7 +19,7 @@ is the identity. Do not build OIDC unless Otto later needs to run off EC2.
 
 ### As is
 
-- `otto/daemon.py`. FastAPI plus a `tick()` loop, no platform-specific calls.
+- `otto/daemon.py` and the routers under `otto/api/`. FastAPI plus a `tick()` loop, no platform-specific calls.
 - State. `OTTO_HOME/state/*.json` and `logs/`, plain JSON under a single-writer
   rule. Copy it across.
 - The board, journal, advisor, store, and findings.
@@ -28,12 +28,12 @@ is the identity. Do not build OIDC unless Otto later needs to run off EC2.
 
 ### Needs porting
 
-- Every spawn path is PowerShell. `launch.py`, `runners/detached.py`, `chat.py`,
-  `meetings.py`, `refresh.py`, `outreach.py`, `triage.py`, and `writing.py` each
-  write a `.launch.ps1` and run `powershell -NoProfile -ExecutionPolicy Bypass
-  -File`. Install PowerShell 7 (`pwsh`) first and measure, since the launchers are
-  mostly environment assignment followed by `claude`. Extract the launcher into one
-  module with a platform-selected backend as a separate change.
+- Every spawn path used to be PowerShell. The eight sites now describe the run and
+  `otto/launcher.py` writes a `.launch.ps1` (Windows) or `.launch.sh` (POSIX) and
+  runs it with the platform's shell; the herdr pane tee script has a bash form
+  too. `OTTO_POWERSHELL=pwsh` picks PowerShell 7 on Windows. What is still
+  unmeasured is a real `claude` session started this way on Linux: the bash
+  rendering is tested, the Claude Code run is not.
 - MCP servers registered as Windows wrapper scripts. A wrapper with no `env` block
   is the right pattern. Each needs a shell sibling.
 - Toasts. `notify.py` runs `scripts/Show-OttoToast.ps1`. Set `OTTO_NO_TOAST=1`.
@@ -161,7 +161,7 @@ If the local port differs, add the forwarded origin to `OTTO_ALLOWED_ORIGINS` (s
    cannot do. Run the flow on the owner's desktop and place the result, or
    port-forward the callback through SSM. `otto identity` on the box moving off
    zero is the acceptance test.
-4. Daemon port. `pwsh` measurement first, launcher extraction second. Set the
+4. Daemon port. The launcher is extracted; measure a real run on the box. Set the
    project roots, decide what gets cloned, set `OTTO_NO_TOAST=1`, and port or
    strand each Windows-script schedule. Run with the workstation daemon stopped,
    on copied state, and diff the journal.

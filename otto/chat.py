@@ -26,7 +26,7 @@ from pathlib import Path
 
 import psutil
 
-from . import config, persona, registry
+from . import config, launcher, persona, registry
 from .models import Run, iso, utcnow
 from .runners import detached, scheduled
 from .store import Store
@@ -216,26 +216,19 @@ def _write_launcher(run_id: str, prompt_file: Path, session_id: str, resume: boo
     sys_file = config.LOG_DIR / f"{run_id[:6]}-chat.system.txt"
     sys_file.write_text(system, encoding="utf-8")
 
-    q = detached._ps_quote
     model = config.CHAT_MODEL or config.DEFAULT_MODEL
-    lines = [
-        "$ErrorActionPreference = 'Continue'",
-        f"Set-Location -LiteralPath {q(config.CHAT_CWD)}",
-        f"$prompt = Get-Content -LiteralPath {q(prompt_file)} -Raw",
-        "$claudeArgs = @('-p', '--output-format', 'json')",
-        f"$claudeArgs += @('{'--resume' if resume else '--session-id'}', '{session_id}')",
-        *([f"$claudeArgs += @('--model', {q(model)})"] if model else []),
-        # By PATH, not by value: Windows PowerShell 5.1 strips or splits on embedded
-        # quotes when it hands an argument to a native exe, and the profile is full
-        # of them. See detached._write_launcher for the day this was found.
-        f"$claudeArgs += @('--append-system-prompt-file', {q(sys_file)})",
-        f"$claudeArgs += @('--disallowed-tools', {q(' '.join(DENIED_TOOLS))})",
-        "$prompt | & claude @claudeArgs",
-        "exit $LASTEXITCODE",
-    ]
-    launcher = config.LOG_DIR / f"{run_id[:6]}-chat.launch.ps1"
-    launcher.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return launcher
+    args = ["-p", "--output-format", "json",
+            "--resume" if resume else "--session-id", session_id]
+    if model:
+        args += ["--model", model]
+    # By PATH, not by value: Windows PowerShell 5.1 strips or splits on embedded
+    # quotes when it hands an argument to a native exe, and the profile is full
+    # of them. See detached._write_launcher for the day this was found.
+    args += ["--append-system-prompt-file", str(sys_file),
+             "--disallowed-tools", " ".join(DENIED_TOOLS)]
+    return launcher.write_claude(
+        config.LOG_DIR / f"{run_id[:6]}-chat",
+        launcher.ClaudeSpec(cwd=str(config.CHAT_CWD), prompt_file=prompt_file, args=tuple(args)))
 
 
 def send(store: Store, message: str) -> tuple[Run, dict]:
@@ -260,10 +253,10 @@ def send(store: Store, message: str) -> tuple[Run, dict]:
         f"{context}\n\n---\n\n{config.OWNER_NAME} asks: {message.strip()}\n", encoding="utf-8"
     )
 
-    launcher = _write_launcher(run_id, prompt_file, session_id, resume)
+    script = _write_launcher(run_id, prompt_file, session_id, resume)
     log = config.LOG_DIR / f"{run_id[:6]}-chat.log"
 
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)]
+    cmd = launcher.command(script)
     fh = log.open("w", encoding="utf-8", errors="replace")
     try:
         proc = subprocess.Popen(

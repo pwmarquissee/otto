@@ -123,7 +123,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config, people, slack
+from . import config, launcher, people, slack
 from .models import Outreach, iso, utcnow
 from .runners import detached
 from .store import Store
@@ -621,23 +621,15 @@ def _send_launcher(oid: str, prompt_file: Path) -> Path:
     If you add skip-permissions here to fix some future prompt, you have silently
     removed the bound and handed a headless session every credential on the box.
     """
-    q = detached._ps_quote
-    lines = [
-        "$ErrorActionPreference = 'Continue'",
-        f"Set-Location -LiteralPath {q(str(config.OTTO_HOME))}",
-        f"$prompt = Get-Content -LiteralPath {q(str(prompt_file))} -Raw",
-        "$claudeArgs = @('-p', '--output-format', 'stream-json', '--verbose')",
-        f"$claudeArgs += @('--allowed-tools', {q(SEND_TOOL)})",
-        *([f"$claudeArgs += @('--model', {q(config.OUTREACH_MODEL)})"]
-          if config.OUTREACH_MODEL else []),
-        *([f"$claudeArgs += @('--max-budget-usd', '{config.OUTREACH_BUDGET_USD}')"]
-          if config.OUTREACH_BUDGET_USD else []),
-        "$prompt | & claude @claudeArgs",
-        "exit $LASTEXITCODE",
-    ]
-    p = config.LOG_DIR / f"outreach-{oid[:8]}.launch.ps1"
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
+    args = ["-p", "--output-format", "stream-json", "--verbose",
+            "--allowed-tools", SEND_TOOL]
+    if config.OUTREACH_MODEL:
+        args += ["--model", config.OUTREACH_MODEL]
+    if config.OUTREACH_BUDGET_USD:
+        args += ["--max-budget-usd", str(config.OUTREACH_BUDGET_USD)]
+    return launcher.write_claude(
+        config.LOG_DIR / f"outreach-{oid[:8]}",
+        launcher.ClaudeSpec(cwd=str(config.OTTO_HOME), prompt_file=prompt_file, args=tuple(args)))
 
 
 def _tool_was_used(stream: str) -> bool:
@@ -724,26 +716,18 @@ def resolve_slack_id(target: str) -> tuple[str | None, str | None]:
         f"found. Do not message anyone. If there is no exact email match, say so.\n",
         encoding="utf-8")
 
-    q = detached._ps_quote
-    lines = [
-        "$ErrorActionPreference = 'Continue'",
-        f"Set-Location -LiteralPath {q(str(config.OTTO_HOME))}",
-        f"$prompt = Get-Content -LiteralPath {q(str(prompt_file))} -Raw",
-        "$claudeArgs = @('-p', '--output-format', 'stream-json', '--verbose')",
-        f"$claudeArgs += @('--allowed-tools', {q(LOOKUP_TOOL)})",
-        *([f"$claudeArgs += @('--model', {q(config.OUTREACH_MODEL)})"]
-          if config.OUTREACH_MODEL else []),
-        f"$claudeArgs += @('--max-budget-usd', '{config.OUTREACH_BUDGET_USD}')",
-        "$prompt | & claude @claudeArgs",
-        "exit $LASTEXITCODE",
-    ]
-    launcher = config.LOG_DIR / f"slackid-{stem}.launch.ps1"
-    launcher.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    args = ["-p", "--output-format", "stream-json", "--verbose",
+            "--allowed-tools", LOOKUP_TOOL]
+    if config.OUTREACH_MODEL:
+        args += ["--model", config.OUTREACH_MODEL]
+    args += ["--max-budget-usd", str(config.OUTREACH_BUDGET_USD)]
+    script = launcher.write_claude(
+        config.LOG_DIR / f"slackid-{stem}",
+        launcher.ClaudeSpec(cwd=str(config.OTTO_HOME), prompt_file=prompt_file, args=tuple(args)))
 
     try:
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-             str(launcher)],
+            launcher.command(script),
             cwd=str(config.OTTO_HOME), capture_output=True, text=True,
             encoding="utf-8", errors="replace",
             timeout=config.OUTREACH_SEND_TIMEOUT,
@@ -813,8 +797,7 @@ def _send_via_connector(o: Outreach) -> tuple[bool, str | None]:
         SEND_PROMPT.format(target=sid, body=o.body, tool=SEND_TOOL),
         encoding="utf-8")
 
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-           "-File", str(_send_launcher(oid, prompt_file))]
+    cmd = launcher.command(_send_launcher(oid, prompt_file))
     try:
         proc = subprocess.run(
             cmd, cwd=str(config.OTTO_HOME), capture_output=True, text=True,

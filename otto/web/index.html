@@ -11,10 +11,11 @@
   <link rel="icon" type="image/png" sizes="256x256" href="/static/icon.png">
   <link rel="apple-touch-icon" href="/static/icon.png">
   <link rel="stylesheet" href="/static/style.css">
-  <!-- Phosphor, as the design specifies. If it fails to load the icons collapse to
-       nothing rather than tofu; every one of them sits beside a text label. -->
-  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css">
-  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css">
+  <!-- Phosphor, as the design specifies, vendored so nothing leaves loopback for a
+       page load (otto/web/vendor/README.md has the version). If it fails to load the
+       icons collapse to nothing rather than tofu; every one sits beside a text label. -->
+  <link rel="stylesheet" href="/static/vendor/phosphor/regular/style.css">
+  <link rel="stylesheet" href="/static/vendor/phosphor/fill/style.css">
 </head>
 <body>
 

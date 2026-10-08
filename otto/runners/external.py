@@ -215,12 +215,15 @@ PROBES = [
 ]
 
 
+def probe_names() -> list[str]:
+    """Every probe this build knows, by the name OTTO_INTEGRATIONS uses."""
+    return [fn.__name__.replace("probe_", "") for fn in PROBES]
+
+
 def enabled_probes() -> list:
-    """PROBES filtered by config.INTEGRATIONS. Unset keeps every probe; set keeps
-    exactly the named ones, so a disabled product has no row at all rather than a
-    permanent red one."""
-    if config.INTEGRATIONS is None:
-        return list(PROBES)
+    """PROBES filtered by config.INTEGRATIONS: exactly the named ones, so a disabled
+    product has no row at all rather than a permanent red one, and an unconfigured
+    install (nothing named) talks to nothing."""
     want = set(config.INTEGRATIONS)
     return [fn for fn in PROBES if fn.__name__.replace("probe_", "") in want]
 

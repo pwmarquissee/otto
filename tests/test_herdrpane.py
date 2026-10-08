@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from otto import config, herdr
+from otto import config, herdr, launcher
 from otto.models import Run, iso, utcnow
 from otto.runners import detached, herdrpane
 
@@ -99,7 +99,9 @@ def test_workspace_is_created_once_and_found_by_label(fake_herdr, monkeypatch, t
 
 
 def test_tee_script_and_the_command_typed_into_the_pane(fake_herdr, monkeypatch, tmp_path):
+    """The PowerShell pane script; the bash form is in test_launcher.py."""
     calls, state = fake_herdr
+    monkeypatch.setattr(launcher, "WINDOWS", True)
     monkeypatch.setattr(herdrpane, "_children_of", lambda pid: [(777, "x it's.ps1 y")])
     log = tmp_path / "run.log"
     cmd = ["powershell", "-File", r"C:\logs\it's.ps1"]
@@ -218,9 +220,10 @@ def test_spawn_runs_in_a_pane_and_records_it(spawnable, monkeypatch, tmp_path):
     # The pane runs the same launcher the detached path would, via -Command so the
     # child decodes claude's UTF-8 before the tee re-encodes it; the launcher path
     # is the token the pid is resolved by.
-    assert seen["cmd"][:4] == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass"]
-    assert seen["cmd"][4] == "-Command" and seen["match"] in seen["cmd"][5]
-    assert seen["match"].endswith(".launch.ps1") and Path(seen["match"]).is_file()
+    assert seen["cmd"] == launcher.pane_command(Path(seen["match"]))
+    if launcher.WINDOWS:
+        assert seen["cmd"][4] == "-Command" and seen["match"] in seen["cmd"][5]
+    assert launcher.is_launcher(seen["match"]) and Path(seen["match"]).is_file()
     assert seen["env"] == {"OTTO_RUN_NAME": "daily", "OTTO_RUN_ID": run.id, "OTTO_UNATTENDED": "1"}
     assert seen["label"] == "daily" and seen["cwd"] == str(tmp_path)
     assert run.cmd == seen["cmd"]
@@ -236,8 +239,8 @@ def test_spawn_falls_back_to_a_detached_process_when_herdr_refuses(spawnable, mo
     assert run.pid == 999 and run.pid_created == 1700000000.0
     assert "herdr unavailable, ran detached (socket)" in run.notes
     assert "| pane" not in run.notes
-    assert len(spawnable) == 1 and spawnable[0][-2:] == ["-File", run.cmd[-1]]
-    assert run.cmd[-1].endswith(".launch.ps1")
+    assert len(spawnable) == 1 and spawnable[0] == launcher.command(Path(run.cmd[-1]))
+    assert launcher.is_launcher(run.cmd[-1])
 
 
 def test_spawn_without_a_server_is_the_old_path_with_a_note(spawnable, monkeypatch, tmp_path):

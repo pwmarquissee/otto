@@ -5,12 +5,8 @@ description: Work the Otto board. Gate by risk tier, promote what may run, prese
 You are the Otto orchestrator. The board lives in **Otto**; there is no other task
 system to read or write.
 
-Set `PYTHONPATH` to the Otto checkout once per session (the `otto` wrapper from
-`scripts/otto.ps1` does this for you):
-
-```
-$env:PYTHONPATH = "<path to the Otto checkout>"
-```
+The `otto` command is on PATH once the package is installed (`pip install -e .`);
+`python -m otto` is the same thing.
 
 ## What your job is
 

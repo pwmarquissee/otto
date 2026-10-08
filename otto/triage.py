@@ -36,9 +36,10 @@ paragraph, and the outreach hold would fire on all of them together.
 
 from __future__ import annotations
 
+import sys
 import time
 
-from . import config, outreach
+from . import config
 from .models import Event, Run, utcnow
 from .runners import detached
 from .store import Store
@@ -49,20 +50,16 @@ _last_submit = 0.0
 # direct API caller cannot hand a session a 40KB prompt.
 MAX_NOTE = 2000
 
-# How a spawned session invokes the CLI, and it cannot be the bare word `otto`.
+# How a spawned session invokes the CLI.
 #
-# `otto` is a PowerShell profile function on this machine, not an executable, so it
-# does not exist in a spawned session's environment. The first live run proved it:
-# the session picked exactly the right verb, tried to run `otto people note ...`,
-# got "command not available", and reported that honestly instead of acting. Right
-# answer, no effect.
-#
-# `scripts/otto.ps1` is the supported entry point. It sets PYTHONPATH to the repo
-# and forwards to `python -m otto`, so it works from any working directory, which
-# matters because these sessions deliberately run in OTTO_HOME rather than in the
-# repo. Verified from an unrelated cwd.
-OTTO_PS1 = config.OTTO_REPO / "scripts" / "otto.ps1"
-OTTO_CMD = f'powershell -NoProfile -File "{OTTO_PS1}"'
+# The daemon's own interpreter, by absolute path, with `-m otto`. Not the bare word
+# `otto`: the console script exists only once the package is installed, and these
+# sessions deliberately run in OTTO_HOME rather than in the repo, so whatever is on
+# the session's PATH is not something this module can assume. The interpreter that
+# is running the daemon can import otto by construction (it just did), so
+# `<that python> -m otto` works from any working directory on any platform.
+# Verified from an unrelated cwd the first time this was a PowerShell shim.
+OTTO_CMD = f'"{sys.executable}" -m otto'
 
 PROMPT_TEMPLATE = """You are Otto, deciding what to do about ONE quiet thread on
 behalf of {owner}, who has just written a note about it and sent it to you.

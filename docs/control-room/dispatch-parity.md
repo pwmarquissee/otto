@@ -11,7 +11,7 @@ on, the running card, and the ledger cost (loaded lazily from
 `/api/ledger/sessions/{sid}`). Verbs: Focus (`POST /api/herdr/focus/{target}`), Open
 (`POST /api/sessions/{id}/open`), Rename (`PATCH /api/sessions/{id}`), and Dispatch a
 card, which picks from the cards the promotion gate would pass. Code:
-`sessionLiveBlock` in `otto/web/app.js`. The task inspector shows "Running in" with
+`sessionLiveBlock` in `otto/web/js/70-dispatch.js`. The task inspector shows "Running in" with
 Focus for a card on a pane, and "Dispatch ->" per idle target for an open card.
 
 **Drag to dispatch.** Drag a card from the Open lane onto a session lane. The lane
@@ -21,7 +21,7 @@ a toast. Same `dragId` pattern as the board. `POST /api/logistics/dispatch`.
 **Palette.** Ctrl+K lists live sessions (title or agent, status), one row per
 suggestion (`otto dispatch approve <id>`), one per open card and idle target
 (`otto dispatch to <id> <agent>`), and `otto herdr open`. Every row is a real command.
-`liveHits` in app.js builds them.
+`liveHits` in `otto/web/js/70-dispatch.js` builds them.
 
 **Rail preview.** Working rows show the pane's last screen line from
 `GET /api/herdr/peek/{target}`, cached 10 s per target in the daemon and mirrored in

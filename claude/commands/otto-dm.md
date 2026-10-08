@@ -19,7 +19,6 @@ Five things, in rough order of frequency:
 rotate the signing cert before it expires".
 
 ```
-$env:PYTHONPATH = "<path to the Otto checkout>"
 python -m otto task add "{short title}" --detail "{what they said, plus anything you looked up}" --tags dm --origin otto-dm
 ```
 

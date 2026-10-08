@@ -38,10 +38,9 @@ You post **at most one notice**, and only if it clears this bar:
 
 ## Step 1 - Load the state
 
-Run these. They are all read-only and all local. Set `PYTHONPATH` to the Otto checkout once per session (the `otto` wrapper from `scripts/otto.ps1` does this for you):
+Run these. They are all read-only and all local.
 
 ```
-$env:PYTHONPATH = "<path to the Otto checkout>"
 python -m otto status
 python -m otto board --json
 python -m otto next

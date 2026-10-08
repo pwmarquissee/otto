@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from .. import config
+from .. import assistant, config
 from ..models import Cadence, Schedule
 
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -163,7 +163,7 @@ def staleness(sched: Schedule, now: datetime | None = None) -> tuple[str, str] |
 # domain starts empty until the owner fills it.
 
 def default_schedules() -> list[Schedule]:
-    seeds = [
+    items = [
         Schedule(
             name="daily-rollup",
             domain=config.WORK,
@@ -270,7 +270,7 @@ def default_schedules() -> list[Schedule]:
         ),
     ]
     if config.SLACK_CHANNEL_ID:
-        seeds.insert(3, Schedule(
+        items.insert(3, Schedule(
             # Not a routine that runs: a freshness marker for the ops feed itself.
             # Stamped by daemon.slack_post when a summary is ACCEPTED by Slack, never
             # by the run that composed it, so this goes stale exactly when the
@@ -295,4 +295,6 @@ def default_schedules() -> list[Schedule]:
             cadence=Cadence(kind="manual"),
             max_age_hours=26,
         ))
-    return seeds
+    # The meeting-notes ingester and the post-ideas miner belong to the assistant:
+    # under the core scope nothing could run them, so they are not seeded.
+    return [sc for sc in items if config.ASSISTANT or sc.runner not in assistant.RUNNERS]

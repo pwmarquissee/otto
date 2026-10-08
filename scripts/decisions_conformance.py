@@ -37,7 +37,7 @@ os.environ["OTTO_FEED_DIR"] = str(TMP / "feed")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from otto import config  # noqa: E402
-from otto.models import Cadence, Decision, RegistryEntry, Schedule, Task, iso, utcnow  # noqa: E402
+from otto.models import Cadence, RegistryEntry, Schedule, Task, iso, utcnow  # noqa: E402
 
 config.mark_daemon()
 config.ensure_dirs()

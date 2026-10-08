@@ -46,8 +46,6 @@ about, never assumed autonomous.
 | Otto HTTP API (`127.0.0.1:8787`) | local daemon, no auth | full board read/write |
 | Slack | claude.ai Slack connector | post to the configured ops channel |
 
-`PYTHONPATH` must point at the Otto checkout for the `python -m otto` calls.
-
 ## Partial failure
 
 - **Idempotent?** Partly. A re-read of the board is safe; a second promotion of an

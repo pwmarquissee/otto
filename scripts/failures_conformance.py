@@ -210,7 +210,10 @@ check("board.py explains why a run card is the exception to the derived rule",
       "never clears" in src)
 
 import otto.daemon as daemon  # noqa: E402
-dsrc = Path(daemon.__file__).read_text(encoding="utf-8")
+from otto.api import runs as api_runs  # noqa: E402
+# The reclassify endpoint moved to otto/api/runs.py; the alert text stayed in the tick.
+dsrc = (Path(daemon.__file__).read_text(encoding="utf-8")
+        + Path(api_runs.__file__).read_text(encoding="utf-8"))
 check("the reclassify endpoint only fills an EMPTY error_kind",
       "or r.error_kind" in dsrc or "r.error_kind:" in dsrc,
       "re-running it must never overwrite a classification")

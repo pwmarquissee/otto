@@ -1,8 +1,8 @@
 """Per-person operational dossiers.
 
-Stolen from Gaia's `context/people/`, with two deliberate differences, both of which
-exist because Gaia's version of this file is the artifact that sat in a public repo
-for twelve weeks:
+The layout comes from an earlier, private assistant of the author's, with two
+deliberate differences, both of which exist because that assistant's dossiers are the
+artifact that sat in a public repo for twelve weeks:
 
   NOT IN A REPO   Dossiers live under OTTO_HOME (~/.claude/otto/people), which is not
                   a git repo and never has been. `sync` refuses to write if that ever
@@ -11,7 +11,7 @@ for twelve weeks:
   OPERATIONAL     What goes in is what the owner needs to do the job: who they are, where
                   they are, what they run, what has broken before. What stays out is
                   anything evaluative or intimate -- compensation, performance,
-                  health, personal circumstances. Gaia's dossiers blur that line;
+                  health, personal circumstances. The earlier dossiers blurred that line;
                   Otto's must not, because the sole IT/security function keeping notes
                   on colleagues is only defensible while the notes are operational.
 

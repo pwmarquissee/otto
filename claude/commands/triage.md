@@ -5,13 +5,6 @@ description: Assess unjudged backlog cards, route them, and promote what may saf
 Work the *unassessed* end of the Otto board. `/orchestrate` decides what to promote
 among cards that already carry a judgment; this pass is what produces that judgment.
 
-Set `PYTHONPATH` to the Otto checkout once per session (the `otto` wrapper from
-`scripts/otto.ps1` does this for you):
-
-```
-$env:PYTHONPATH = "<path to the Otto checkout>"
-```
-
 ## Why this exists
 
 Feeds write onto the backlog hourly (`slack-dm-fetch` every 1h, `slack-sweep` and

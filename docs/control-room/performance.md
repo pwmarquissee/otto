@@ -13,7 +13,7 @@ each card's `detail` a second time.
   nothing in the payload reads telemetry. Process-local, restarts at 0 with the daemon.
 - `/ws/events` (otto/web_events.py): one WebSocket that announces version changes,
   polled every 250 ms on the loop. Goes through OriginGuard like every other socket.
-- `/api/state` (otto/daemon.py): the payload is computed once per store version,
+- `/api/state` (otto/daemon.py computes it, otto/api/state.py serves it): the payload is computed once per store version,
   serialized and gzipped once per fill, and served from cache until the store moves
   or `config.STATE_IDLE_CACHE_SECONDS` (10 s) passes. A write invalidates at once, so
   the poll after an action sees it. Strong `ETag` (sha1 of the JSON bytes),

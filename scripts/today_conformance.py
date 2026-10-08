@@ -20,7 +20,7 @@ mail split is worth anything for. If `awareness` and unknown both drifted into
 from __future__ import annotations
 
 import sys
-from datetime import datetime, time, timedelta
+from datetime import datetime, time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))

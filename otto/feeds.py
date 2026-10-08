@@ -1,7 +1,7 @@
 """Producer/consumer feed directories: many producers, still one writer.
 
-Stolen from Gaia's `command-center/feed/<source>/current.json` + `producers/`. The
-shape is decoupled on purpose: a producer writes a file, the consumer reads it,
+The shape comes from an earlier, private assistant of the author's: a
+`feed/<source>/current.json` directory plus a `producers/` tree, decoupled on purpose: a producer writes a file, the consumer reads it,
 and neither knows the other exists.
 
 WHY OTTO WANTS IT. Adding a data source today means editing `refresh.py` AND the

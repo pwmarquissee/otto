@@ -36,6 +36,7 @@ anyway. So Otto launches with `pane run` and waits for detection itself.
 
 from __future__ import annotations
 
+import re
 import glob
 import json
 import os
@@ -508,8 +509,12 @@ def open_cwds(snap: dict[str, Any] | None) -> set[str]:
 
 
 def agent_name_for(path: str) -> str:
-    """A herdr agent name from a directory name: [a-z][a-z0-9_-]{0,31}."""
-    raw = Path(path).name.lower()
+    """A herdr agent name from a directory name: [a-z][a-z0-9_-]{0,31}.
+
+    The last path segment on either separator: a session row's cwd is whatever the
+    hook on that machine recorded, so a Windows path read on Linux still names its
+    own directory rather than the whole string."""
+    raw = re.split(r"[\\/]", path.rstrip("\\/"))[-1].lower()
     cleaned = "".join(c if (c.isascii() and (c.isalnum() or c in "_-")) else "-" for c in raw)
     cleaned = cleaned.lstrip("0123456789_-")
     return (cleaned or "repo")[:32]

@@ -62,6 +62,29 @@ ORG_NAME = os.environ.get("OTTO_ORG_NAME", "your organization").strip() or "your
 ORG_DOMAINS = tuple(d.lower().lstrip("@") for d in _csv("OTTO_ORG_DOMAINS"))
 CONTRACTOR_DOMAINS = tuple(d.lower().lstrip("@") for d in _csv("OTTO_CONTRACTOR_DOMAINS"))
 
+# ---- scope ----------------------------------------------------------------
+# Which half of Otto this daemon is.
+#
+#   core       the orchestrator the README describes: board, sessions, dispatch,
+#              schedules, hooks, ledger, runs, feeds, decisions, journal, nudges,
+#              priorities, retire, chat, refresh, today. The default.
+#   assistant  core plus the owner's assistant modules (outreach, writing, people,
+#              prep, wellbeing, summon, inbox, meetings): their routes, their tick
+#              hooks, their schedules and their subcommands.
+#
+# A scope, not pip extras, because nothing in the assistant needs a package the
+# core lacks; what differs is what the daemon loads. otto/assistant/__init__.py is
+# the boundary and tests/test_scope.py holds it. An unknown value is clamped to
+# core rather than raised, so a typo in otto.env cannot keep the daemon down; the
+# clamp is recorded in SCOPE_WARNING for `otto doctor` to show.
+SCOPES = ("core", "assistant")
+_scope_raw = os.environ.get("OTTO_SCOPE", "core").strip().lower() or "core"
+SCOPE = _scope_raw if _scope_raw in SCOPES else "core"
+SCOPE_WARNING: str | None = (
+    None if _scope_raw in SCOPES
+    else f"OTTO_SCOPE={_scope_raw!r} is not one of {', '.join(SCOPES)}; running core")
+ASSISTANT = SCOPE == "assistant"
+
 # ---- domains ----------------------------------------------------------------
 # Otto spans work and personal life. Everything it tracks carries a domain so the
 # two never blur together in a view, an alert, or a Slack post.
@@ -187,16 +210,19 @@ TICK_SECONDS = int(os.environ.get("OTTO_TICK", "15"))
 # profile whose session the automation actually depends on.
 AWS_PROFILE = os.environ.get("OTTO_AWS_PROFILE", "default").strip() or "default"
 
-# Which integration probes run. Unset means every probe, which is what an install
-# that predates the setting expects. Set means exactly these; "none" means no
-# probe at all. A probe for a product nobody here uses manufactures a red row that
-# can never go green, and `otto setup` writes this so a fresh install never has one.
+# Which integration probes run. Set means exactly these; "none" means no probe at
+# all; UNSET MEANS NONE TOO. A probe talks to an outside service (the Anthropic
+# probe calls the API, the AWS probe shells to the CLI), and nothing may leave the
+# box until it is configured, so `serve` without `setup` probes nothing. `otto setup`
+# writes this, and an install that predates the setting gets every probe it already
+# had written into otto.env once at daemon start (setup.pin_integrations), so
+# nothing changes for it. A probe for a product nobody here uses manufactures a red
+# row that can never go green, which is why the choice is explicit.
 _integrations_raw = os.environ.get("OTTO_INTEGRATIONS")
 INTEGRATIONS_SET = _integrations_raw is not None
-INTEGRATIONS: tuple[str, ...] | None = (
-    None if _integrations_raw is None
-    else tuple(x.strip().lower() for x in _integrations_raw.split(",")
-               if x.strip() and x.strip().lower() != "none"))
+INTEGRATIONS: tuple[str, ...] = tuple(
+    x.strip().lower() for x in (_integrations_raw or "").split(",")
+    if x.strip() and x.strip().lower() != "none")
 
 # ---- discovery --------------------------------------------------------------
 

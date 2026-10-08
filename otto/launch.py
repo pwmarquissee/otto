@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 
 import psutil
 
-from . import config, feeds, findings
+from . import config, feeds, findings, launcher
 from .models import Run, Schedule, iso, utcnow
 from .runners import detached
 from .store import Store
@@ -189,24 +189,10 @@ def launch(store: Store, sched: Schedule, autorun: bool = False) -> tuple[Run, s
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
     log = config.LOG_DIR / f"{run_id[:6]}-{sched.name}.log"
 
-    # A shell command emits no {"type":"result"} object, and Otto never waits on a
-    # detached child, so without help `poll()` would find no result and mark every
-    # successful shell run `orphaned`. Wrapping it in a launcher that prints its exit
-    # code gives the poller something real to read.
-    launcher = config.LOG_DIR / f"{run_id[:6]}-{sched.name}.launch.ps1"
-    launcher.write_text(
-        "\n".join([
-            "$ErrorActionPreference = 'Continue'",
-            f"Set-Location -LiteralPath {detached._ps_quote(config.HOME)}",
-            command,
-            "$code = $LASTEXITCODE",
-            "if ($null -eq $code) { $code = 0 }",
-            'Write-Output "OTTO_EXIT=$code"',
-            "exit $code",
-        ]) + "\n",
-        encoding="utf-8",
-    )
-    argv = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(launcher)]
+    # Wrapped so the poller has an exit code to read; launcher.write_shell says why.
+    script = launcher.write_shell(config.LOG_DIR / f"{run_id[:6]}-{sched.name}",
+                                  str(config.HOME), command)
+    argv = launcher.command(script)
 
     fh = log.open("w", encoding="utf-8", errors="replace")
     try:

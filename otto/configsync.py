@@ -1,11 +1,13 @@
 """Config consolidation: Otto owning the files Claude Code reads.
 
-Layout after migration:
+Layout after migration (<checkout> is wherever this repo lives):
 
-  D:\\otto\\claude\\{agents,commands,skills}   the only copy; ~/.claude junctions here
-  D:\\otto\\orchestrator\\                     same, junctioned from ~/.claude
-  D:\\otto\\claude\\CLAUDE.md + *.sh           canonical, but COPIED to ~/.claude
-  D:\\otto\\claude\\snapshots\\                backup only, never auto-restored
+  <checkout>/claude/{agents,commands,skills}   the only copy; ~/.claude junctions here
+  <checkout>/claude/CLAUDE.md + *.sh            canonical, but COPIED to ~/.claude
+  <checkout>/claude/snapshots/                  backup only, never auto-restored
+
+Only directories the checkout actually has are expected as junctions (JUNCTIONS
+below); a fresh clone ships claude/commands and nothing else.
 
 Why two mechanisms. A Windows directory junction is transparent to Claude Code
 (verified: a headless session with all file tools denied still resolved

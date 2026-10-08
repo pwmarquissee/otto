@@ -19,7 +19,6 @@ Five things, in rough order of frequency:
 **It is done.** "done", "shipped this yesterday", "the CFO signed off".
 
 ```
-$env:PYTHONPATH = "<path to the Otto checkout>"
 python -m otto task mv {id} done
 ```
 

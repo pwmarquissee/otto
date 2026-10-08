@@ -137,7 +137,7 @@ def fresh(tmp_path, daemon, monkeypatch):
     monkeypatch.setattr(config, "ORG_NAME", setup.DEFAULT_ORG)
     monkeypatch.setattr(config, "WORK_ROOTS", ())
     monkeypatch.setattr(config, "PERSONAL_ROOTS", ())
-    monkeypatch.setattr(config, "INTEGRATIONS", None)
+    monkeypatch.setattr(config, "INTEGRATIONS", ())
     monkeypatch.setattr(config, "INTEGRATIONS_SET", False)
     # A machine with herdr installed and running would make that step "done" and
     # hide what the skip tests check. A fresh install has neither.
@@ -260,14 +260,40 @@ def test_unconfigured_integrations_stay_off_the_board_until_setup_finishes(fresh
 
 
 def test_probe_filter_honors_the_integrations_setting(monkeypatch):
+    """Unset is the same as none: a probe is outbound traffic, and an unconfigured
+    daemon talks to nothing (it used to mean every probe)."""
     from otto.runners import external
-    monkeypatch.setattr(config, "INTEGRATIONS", None)
-    assert len(external.enabled_probes()) == len(external.PROBES)
+    monkeypatch.setattr(config, "INTEGRATIONS", ())
+    monkeypatch.setattr(config, "INTEGRATIONS_SET", False)
+    assert external.enabled_probes() == []
     monkeypatch.setattr(config, "INTEGRATIONS", ("aws",))
     assert [fn.__name__ for fn in external.enabled_probes()] == ["probe_aws"]
     monkeypatch.setattr(config, "INTEGRATIONS", ())
     assert external.enabled_probes() == []
     assert external.probe_all() == []
+
+
+def test_pin_integrations_keeps_a_pre_setting_install_probing(fresh, monkeypatch):
+    """An install that predates OTTO_INTEGRATIONS ran every probe. The first start on
+    this code writes that full list into otto.env for it, once, and applies it in
+    process. A fresh install gets nothing written: its setup step asks."""
+    from otto.runners import external
+    from otto import settings
+    assert setup.pin_integrations(fresh) is False, "fresh install: the step asks"
+    assert "OTTO_INTEGRATIONS" not in settings.read(config.SETTINGS_PATH)
+
+    fresh.put_setup({"completed_at": "2026-01-01T00:00:00Z", "migrated": True})
+    assert setup.pin_integrations(fresh) is True
+    filed = settings.read(config.SETTINGS_PATH)["OTTO_INTEGRATIONS"]
+    assert filed.split(",") == external.probe_names()
+    assert config.INTEGRATIONS == tuple(external.probe_names())
+    assert config.INTEGRATIONS_SET is True
+    assert len(external.enabled_probes()) == len(external.PROBES)
+    assert setup.pin_integrations(fresh) is False, "written once"
+
+    monkeypatch.setattr(config, "INTEGRATIONS", ("aws",))
+    monkeypatch.setattr(config, "INTEGRATIONS_SET", True)
+    assert setup.pin_integrations(fresh) is False, "a set value is never overwritten"
 
 
 # ---- routes ----------------------------------------------------------------------

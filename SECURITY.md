@@ -8,7 +8,7 @@ local user is the owner.
 
 ## Threat model
 
-The daemon (`otto/daemon.py`, FastAPI on `127.0.0.1:8787`) can start
+The daemon (`otto/daemon.py` with its routers under `otto/api/`, FastAPI on `127.0.0.1:8787`) can start
 `claude --dangerously-skip-permissions` with any prompt in any directory, type into
 live terminals through herdr, run schedules (PowerShell commands), and send Slack
 messages as the Otto bot. Anything that can drive the daemon can do all of that as
@@ -189,10 +189,11 @@ origin to `OTTO_ALLOWED_ORIGINS`.
 
 ## Dependencies
 
-`requirements.txt` sets lower bounds only (`fastapi>=0.110`, `uvicorn>=0.27`,
-`pydantic>=2.6`, `psutil>=5.9`, `requests>=2.31`, `websockets>=12`). Nothing is
-pinned and there is no lock file, so a fresh install takes the newest releases.
-`requirements-dev.txt` adds `pytest` and `httpx`. The desktop shell's Rust
+`pyproject.toml` sets lower bounds only (`fastapi>=0.110`, `uvicorn>=0.27`,
+`pydantic>=2.6`, `psutil>=5.9`, `requests>=2.31`, `websockets>=12`) so Otto coexists
+with whatever is installed beside it. `requirements.lock` pins the exact set
+(generated with `uv pip compile --universal`, test extras included) and is what CI
+installs, so a run is reproducible. Install from the lock to get the same set. The desktop shell's Rust
 dependencies are pinned by `desktop/src-tauri/Cargo.lock`. CI references actions by
 tag, not by commit SHA.
 

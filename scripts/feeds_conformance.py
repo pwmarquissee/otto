@@ -34,7 +34,7 @@ from otto.models import iso, utcnow  # noqa: E402
 config.mark_daemon()
 config.ensure_dirs()
 
-from otto import feeds, findings  # noqa: E402
+from otto import feeds  # noqa: E402
 from otto.store import Store  # noqa: E402
 
 # Declared for the test only. This is exactly the one-line declaration a real

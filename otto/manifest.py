@@ -1,7 +1,8 @@
 """Declared-vs-observed drift detection over Otto's capability surface.
 
-Stolen from Gaia's `.env.keys`, which exists because the always-on Mac was silently
-missing an entire credential set and nothing ever compared the two machines. The
+The idea comes from an earlier, private assistant of the author's: a declared key list,
+written after a second machine was silently missing an entire credential set and
+nothing ever compared the two. The
 failure it catches is absence of a thing nobody declared, which no liveness probe can
 find: `otto probe` can tell you a registered server is broken, but it cannot tell you
 a server that should exist was never registered at all.

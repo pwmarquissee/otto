@@ -7,6 +7,7 @@ runs on loopback and talks to nothing.
 ## Before a pull request
 
 ```
+pip install -e .[dev]
 python -m pytest
 python scripts/oss_scan.py
 ```

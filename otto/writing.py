@@ -1,8 +1,7 @@
 """Short public posts, drawn from the work that already happened.
 
-The gap this closes is a career one. The Sr. Director expectations include
-mentorship, internal or external, and there is no energy left in the week for the
-in-person kind. Writing about the work is the form of external mentorship that a
+The gap this closes is a career one. A senior role expects mentorship, internal or
+external, and there is no energy left in the week for the in-person kind. Writing about the work is the form of external mentorship that a
 depleted week can still hold, provided two things are true: the ideas arrive
 without being hunted for, and the draft is most of the way there before he sits
 down. So this module mines the week for post ideas, drafts the one he picks in his
@@ -45,7 +44,7 @@ from typing import Any
 
 import psutil
 
-from . import config, notify
+from . import config, launcher, notify
 from .models import Post, Run, iso, utcnow
 from .refresh import _extract as extract_json
 from .runners import detached
@@ -630,29 +629,21 @@ def build_draft_prompt(store: Store, post: Post, today: date | None = None) -> s
 # ---------------------------------------------------------------------------
 
 def _launcher(run_id: str, prompt_file: Path, kind: str) -> Path:
-    q = detached._ps_quote
     # No tools and no MCP servers, so no permissions to skip. The empty config is
     # what drops the local servers and their 28k tokens of definitions; the deny
     # list is belt and braces for the built-ins. See detached._write_launcher.
     empty = config.LOG_DIR / f"{run_id[:6]}-writing.mcp.json"
     empty.write_text('{"mcpServers":{}}', encoding="utf-8")
-    lines = [
-        "$ErrorActionPreference = 'Continue'",
-        f"Set-Location -LiteralPath {q(config.CHAT_CWD)}",
-        f"$prompt = Get-Content -LiteralPath {q(prompt_file)} -Raw",
-        "$claudeArgs = @('-p', '--output-format', 'json')",
-        f"$claudeArgs += @('--strict-mcp-config', '--mcp-config', {q(empty)})",
-        f"$claudeArgs += @('--disallowed-tools', {q(' '.join(DENIED_TOOLS))})",
-        *([f"$claudeArgs += @('--max-budget-usd', '{config.WRITING_BUDGET_USD}')"]
-          if config.WRITING_BUDGET_USD else []),
-        *([f"$claudeArgs += @('--model', {q(config.WRITING_MODEL)})"]
-          if config.WRITING_MODEL else []),
-        "$prompt | & claude @claudeArgs",
-        "exit $LASTEXITCODE",
-    ]
-    p = config.LOG_DIR / f"{run_id[:6]}-writing-{kind}.launch.ps1"
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
+    args = ["-p", "--output-format", "json",
+            "--strict-mcp-config", "--mcp-config", str(empty),
+            "--disallowed-tools", " ".join(DENIED_TOOLS)]
+    if config.WRITING_BUDGET_USD:
+        args += ["--max-budget-usd", str(config.WRITING_BUDGET_USD)]
+    if config.WRITING_MODEL:
+        args += ["--model", config.WRITING_MODEL]
+    return launcher.write_claude(
+        config.LOG_DIR / f"{run_id[:6]}-writing-{kind}",
+        launcher.ClaudeSpec(cwd=str(config.CHAT_CWD), prompt_file=prompt_file, args=tuple(args)))
 
 
 def _spawn(prompt: str, kind: str, post_id: str | None = None) -> Run:
@@ -662,8 +653,7 @@ def _spawn(prompt: str, kind: str, post_id: str | None = None) -> Run:
     prompt_file.write_text(prompt, encoding="utf-8")
     log = config.LOG_DIR / f"{run_id[:6]}-writing-{kind}.log"
 
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-           "-File", str(_launcher(run_id, prompt_file, kind))]
+    cmd = launcher.command(_launcher(run_id, prompt_file, kind))
     fh = log.open("w", encoding="utf-8", errors="replace")
     try:
         proc = subprocess.Popen(

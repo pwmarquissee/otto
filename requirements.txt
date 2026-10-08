@@ -1,9 +1,4 @@
-# All of these were already present in the environment Otto targets.
-# Pinned to lower bounds rather than exact versions so Otto does not fight
-# whatever else is installed alongside it.
-fastapi>=0.110
-uvicorn>=0.27
-pydantic>=2.6
-psutil>=5.9
-requests>=2.31
-websockets>=12      # uvicorn's WebSocket backend for /ws/events and /ws/term
+# Runtime dependencies are declared in pyproject.toml; this installs the package
+# itself (editable) so `otto` and `python -m otto` work from any directory.
+# For the exact pinned set CI uses, install requirements.lock first.
+-e .

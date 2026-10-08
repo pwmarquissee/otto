@@ -40,6 +40,7 @@ as None with the reason, and Otto's poll judges it off the log.
 
 from __future__ import annotations
 
+import shlex
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -47,7 +48,7 @@ from typing import Any, NamedTuple
 
 import psutil
 
-from .. import config, herdr, safeargs
+from .. import config, herdr, launcher, safeargs
 from ..models import Run
 
 WORKSPACE_LABEL = "otto-runs"
@@ -182,7 +183,14 @@ def resolve_pid(pane_id: str, shell_pid: int, match: str | None,
 
 def _tee_script(cmdline: list[str] | str, log_path: Path, env: dict[str, str] | None) -> Path:
     """Write the per-run pane script. See the module docstring for why this is
-    not Tee-Object."""
+    not Tee-Object. The pane's shell is the platform's: PowerShell on Windows,
+    bash elsewhere, so the script is written for whichever one the pane runs."""
+    for k in (env or {}):
+        # The name is written into the script unquoted, so it must be a name.
+        if not safeargs.is_env_name(k):
+            raise herdr.HerdrError("bad_env", f"not an environment variable name: {k[:64]!r}")
+    if not launcher.WINDOWS:
+        return _tee_script_sh(cmdline, log_path, env)
     if isinstance(cmdline, str):
         invoke = cmdline
     else:
@@ -200,9 +208,6 @@ def _tee_script(cmdline: list[str] | str, log_path: Path, env: dict[str, str] | 
         "$env:PYTHONIOENCODING = 'utf-8'",
     ]
     for k, v in (env or {}).items():
-        # The name is written into the script unquoted, so it must be a name.
-        if not safeargs.is_env_name(k):
-            raise herdr.HerdrError("bad_env", f"not an environment variable name: {k[:64]!r}")
         lines.append(f"$env:{k} = {_q(v)}")
     lines += [
         f"$__w = [IO.StreamWriter]::new({_q(log_path)}, $false, [Text.UTF8Encoding]::new($false))",
@@ -215,6 +220,27 @@ def _tee_script(cmdline: list[str] | str, log_path: Path, env: dict[str, str] | 
     script = log_path.with_name(log_path.name + ".pane.ps1")
     script.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return script
+
+
+def _tee_script_sh(cmdline: list[str] | str, log_path: Path, env: dict[str, str] | None) -> Path:
+    """The bash form of _tee_script: same marks, same byte-exact UTF-8 log, the
+    command's own exit code reported on the last line."""
+    invoke = cmdline if isinstance(cmdline, str) else " ".join(shlex.quote(c) for c in cmdline)
+    lines = ["#!/usr/bin/env bash", "export PYTHONUTF8=1 PYTHONIOENCODING=utf-8"]
+    lines += [f"export {k}={shlex.quote(v)}" for k, v in (env or {}).items()]
+    lines += [
+        f"{{ {invoke}; }} 2>&1 | tee -- {shlex.quote(str(log_path))}",
+        'echo "otto: run exited ${PIPESTATUS[0]}"',
+    ]
+    script = log_path.with_name(log_path.name + ".pane.sh")
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    script.chmod(0o700)
+    return script
+
+
+def _pane_invocation(script: Path) -> str:
+    """What gets typed into the pane shell to run the script."""
+    return f"& {_q(script)}" if launcher.WINDOWS else f"bash {shlex.quote(str(script))}"
 
 
 class Launched(NamedTuple):
@@ -243,7 +269,7 @@ def launch_in_pane(cmdline: list[str] | str, cwd: str, log_path: str | Path,
     shell_pid = _wait_shell(pane)
     script = _tee_script(cmdline, log, env)
     # From here on nothing raises: the command is in the shell.
-    herdr.run_in_pane(pane, f"& {_q(script)}")
+    herdr.run_in_pane(pane, _pane_invocation(script))
     pid, note = resolve_pid(pane, shell_pid, match)
     return Launched(pane, pid, ws, note)
 

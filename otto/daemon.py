@@ -35,14 +35,13 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from . import (activity, advisor, board, chat, config, configsync, decisions, dedupe,
                dispatch, feeds, findings, herdr, journal, known, launch, ledger, logistics,
-               meetings, safeargs,
-               notify, nudges, outreach, people, persona, prep, refresh, registry,
-               repos, retire, inbox, sessions, slack, spend, summon, telemetry,
-               triage, verdict, wellbeing, writing)
-# Aliased, matching advisor.py: several functions in here bind a local `today` to a
-# date string, and a module of the same name shadowed by a local is a trap.
+               safeargs, notify, nudges, persona, refresh, registry, repos, retire,
+               sessions, slack, spend, telemetry, verdict)
+# The assistant half (outreach, writing, people, prep, wellbeing, summon, inbox,
+# meetings) is imported only under OTTO_SCOPE=assistant, further down, once the
+# app exists. See otto/assistant/__init__.py for the boundary and why.
+from . import assistant
 from . import settings, setup
-from . import today as _today
 from .models import Alert, Cadence, Run, Schedule, Snapshot, Task, iso, utcnow
 from .originguard import OriginGuard, default_origins
 from .runners import detached, external, machine, scheduled
@@ -55,9 +54,6 @@ store = Store()
 
 # Cadences for the tick loop's own periodic work, in seconds.
 POLL_RUNS_EVERY = config.TICK_SECONDS
-# Summons are polled far slower than the tick: see config.SUMMON_EVERY_SECONDS.
-_last_summon = 0.0
-_last_dm = 0.0
 SCAN_REGISTRY_EVERY = 600
 PROBE_EVERY = 300
 
@@ -110,10 +106,9 @@ def poll_runs() -> list[str]:
     notes: list[str] = []
     finished_chats: list[Run] = []
     finished_refresh: list[Run] = []
-    finished_ingest: list[Run] = []
     finished_tasks: list[Run] = []
     finished_schedules: list[Run] = []
-    finished_writing: list[Run] = []
+    finished_assistant: list[Run] = []
     with store.lock:
         runs = store.runs()
         changed = False
@@ -130,10 +125,8 @@ def poll_runs() -> list[str]:
                     finished_chats.append(runs[i])
                 elif "mode=refresh" in (runs[i].notes or ""):
                     finished_refresh.append(runs[i])
-                elif "mode=ingest" in (runs[i].notes or ""):
-                    finished_ingest.append(runs[i])
-                elif "mode=writing" in (runs[i].notes or ""):
-                    finished_writing.append(runs[i])
+                elif config.ASSISTANT and _ahooks.owns(runs[i]):
+                    finished_assistant.append(runs[i])
                 elif "mode=task" in (runs[i].notes or ""):
                     finished_tasks.append(runs[i])
                 elif "mode=schedule" in (runs[i].notes or ""):
@@ -161,38 +154,11 @@ def poll_runs() -> list[str]:
         except Exception as e:  # noqa: BLE001
             notes.append(f"refresh harvest failed: {e}")
 
-    for run in finished_ingest:
-        try:
-            notes.extend(meetings.harvest(store, run))
-            owner = next((sc.name for sc in store.schedules()
-                          if sc.runner == "ingest"), None)
-            if owner:
-                # Only a run that actually returned usable JSON counts as a success.
-                # Stamping a failed fetch would make an ingester that has been dead
-                # for a week read as perfectly fresh, which is the blindness the
-                # staleness clock exists to remove.
-                if run.status == "ok":
-                    store.stamp(owner, "ok", run.id)
-                else:
-                    store.mark_attempt(owner, run.status, run.id)
-        except Exception as e:  # noqa: BLE001
-            notes.append(f"meeting ingest harvest failed: {e}")
-
-    for run in finished_writing:
-        try:
-            notes.extend(writing.harvest(store, run))
-            if "kind=ideas" in (run.notes or ""):
-                owner = next((sc.name for sc in store.schedules()
-                              if sc.runner == "writing"), None)
-                if owner:
-                    # Same rule as ingest: only a run that returned usable JSON
-                    # counts, or a miner dead for a month reads as fresh.
-                    if run.status == "ok":
-                        store.stamp(owner, "ok", run.id)
-                    else:
-                        store.mark_attempt(owner, run.status, run.id)
-        except Exception as e:  # noqa: BLE001
-            notes.append(f"writing harvest failed: {e}")
+    # Meeting ingest and writing runs: the assistant's harvesters, which stamp
+    # their own schedules. Only reached under the assistant scope, because only
+    # that profile can have started such a run.
+    for run in finished_assistant:
+        notes.extend(_ahooks.harvest(run))
 
     for run in finished_tasks:
         try:
@@ -227,11 +193,11 @@ def autostart_due() -> list[str]:
 
       refresh  the built-in read-only email/calendar fetch. Cheap, bounded, no
                mutation, so it needs little more than a duplicate check.
-      ingest   the built-in read-only Notion meeting-notes parse. Same risk class
-               as refresh: an allow-listed set of read tools, and the only thing it
-               writes is Otto's own board and ledger.
-      writing  the built-in post-ideas miner. Material is injected, every tool
-               is denied and the MCP config is empty, so it can touch nothing.
+      ingest,  the assistant's two: the read-only meeting-notes parse and the
+      writing  post-ideas miner. Both are the same risk class as refresh (read
+               tools only, or no tools at all; the only writes are to Otto's own
+               board and ledger). See otto/assistant/hooks.py; under the core
+               profile a schedule with one of these runners is skipped.
       launch   the schedule's real command, unattended. For a slash command that
                is a Claude Code session holding skip-permissions with nobody
                watching, so every guard in launch.autorun_blocked() applies.
@@ -247,10 +213,7 @@ def autostart_due() -> list[str]:
         r.domain for r in store.runs()
         if r.status == "running" and "mode=refresh" in (r.notes or "")
     }
-    # Not per-domain: there is one Notion workspace, so one ingester at a time. Two
-    # in flight would both read the same pages before either wrote the ledger.
-    ingest_running = any(r.status == "running" and "mode=ingest" in (r.notes or "")
-                         for r in store.runs())
+    assistant_starts = _ahooks.Autostart(store.runs()) if config.ASSISTANT else None
 
     for sched in store.schedules():
         if not (sched.enabled and sched.autostart):
@@ -270,28 +233,12 @@ def autostart_due() -> list[str]:
             except Exception as e:  # noqa: BLE001
                 notes.append(f"could not autostart {sched.name}: {e}")
 
-        elif sched.runner == "ingest":
-            if ingest_running:
-                continue
-            try:
-                run = meetings.start(store)
-                store.upsert_run(run)
-                ingest_running = True
-                notes.append(f"autostarted {sched.name} (pid {run.pid})")
-            except Exception as e:  # noqa: BLE001
-                notes.append(f"could not autostart {sched.name}: {e}")
-
-        elif sched.runner == "writing":
-            # Reads Otto's own state into a prompt, no tools, no MCP, budget-capped.
-            # The cheapest risk class Otto has, so it autostarts like refresh does.
-            try:
-                run = writing.start_ideas(store)
-                store.upsert_run(run)
-                notes.append(f"autostarted {sched.name} (pid {run.pid})")
-            except ValueError:
-                continue  # one already in flight
-            except Exception as e:  # noqa: BLE001
-                notes.append(f"could not autostart {sched.name}: {e}")
+        elif sched.runner in assistant.RUNNERS:
+            if assistant_starts is None:
+                continue  # core scope: nothing can run it, and nothing seeded it
+            msg = assistant_starts.start(sched)
+            if msg:
+                notes.append(msg)
 
         elif sched.runner == "launch":
             blocked = launch.autorun_blocked(store, sched)
@@ -504,96 +451,6 @@ def daily_journal() -> list[str]:
     return notes
 
 
-def _clear_block_preps() -> list[str]:
-    """Remove prep briefs posted for a time block.
-
-    Two cases, both real. The filter shipped after the briefs did, so a "Team Work
-    Time with Hermann, Jean-Eric" brief carrying fifteen lines of dossier was already
-    sitting at the top of Today. And `config.CALENDAR_BLOCKS` can grow later, at which
-    point yesterday's decision applies retroactively or it does not really hold.
-
-    Deleted rather than marked read, because the dashboard renders the last twelve
-    notices whatever their read state: marking it read leaves the same wall of text on
-    the screen, one shade dimmer. Nothing is lost either. A prep brief is a joined view
-    of state Otto still holds, and `otto prep` rebuilds it on demand.
-
-    Scoped to `source == "prep"`. This must never touch a run failure or an outage
-    notice that happens to have the word "standup" in its title.
-    """
-    notes: list[str] = []
-    for n in store.notices():
-        if n.source != "prep" or not _today.is_block(n.title):
-            continue
-        if store.delete_notice(n.id):
-            notes.append(f"cleared block prep notice: {n.title[:48]}")
-    return notes
-
-
-def meeting_prep() -> list[str]:
-    """Post the brief for a meeting starting within PREP_LEAD_MINUTES.
-
-    This is the only proactive half of prep, and the constraints on it are all about
-    not becoming an interruption the owner mutes.
-
-    ONCE PER MEETING. Deduped on the event title within the day, so a 15-second tick
-    does not deliver sixty identical toasts across the lead window. The dedup key is
-    the title rather than a hash of the whole event, because a meeting whose end time
-    got edited is still the same meeting.
-
-    ONLY IF THERE IS SOMETHING TO SAY. A brief with no matched attendee is a toast
-    that says there is a meeting, which the calendar already did. It is skipped,
-    not sent empty.
-
-    NEVER OFF A STALE CALENDAR. `advisor` suppresses the same way: a confident "in 10
-    minutes" read off a day-old snapshot is worse than silence, because it is wrong
-    in the direction of being acted on.
-
-    RELATIONSHIP NOTES ARE WITHHELD. `sensitive=False` drops the background section
-    from the toast. A toast can render on a shared screen, and the dossiers carry
-    private material about colleagues; the full brief stays behind `otto prep`, which
-    the owner runs deliberately.
-
-    NOT FOR TIME BLOCKS. `prep.next_meeting` skips them. This function also clears any
-    block brief already posted, see `_clear_block_preps`.
-    """
-    notes: list[str] = []
-    notes += _clear_block_preps()
-    if not config.PREP_NOTIFY:
-        return notes
-    snaps = {k: v.model_dump() for k, v in store.snapshots().items()}
-    agenda = snaps.get(f"{config.WORK}/agenda")
-    if not agenda:
-        return notes
-    age_h = journal_age_hours(agenda.get("fetched_at"))
-    if age_h is None or age_h > config.SNAPSHOT_STALE_HOURS:
-        return notes
-
-    p = prep.next_meeting(store, within_minutes=config.PREP_LEAD_MINUTES)
-    if p is None or p.event is None or not p.matched:
-        return notes
-    if not prep.actionable(store, p):
-        # Matched people, but nothing open with any of them. A toast here would only
-        # restate the calendar entry, and the toast that restates the calendar is the
-        # one that teaches the owner to dismiss the rest unread.
-        return notes
-
-    today_key = datetime.now().astimezone().date().isoformat()
-    key = p.event.title[:40]
-    if any(n.source == "prep" and (n.at or "")[:10] == today_key and key in n.title
-           for n in store.notices()):
-        return notes
-
-    body = "\n".join(prep.brief_lines(store, p, sensitive=False))
-    who = ", ".join(str(m.person.get("display_name")) for m in p.matched)
-    notify.post(store,
-                f"{p.event.when} {p.event.title[:40]} with {who[:60]}",
-                body=body, level="info", domain=config.WORK, source="prep",
-                command="otto prep", notify=True)
-    notes.append(f"posted meeting prep for '{key}' ({p.minutes}m out, "
-                 f"{len(p.matched)} matched)")
-    return notes
-
-
 def journal_age_hours(ts: str | None) -> float | None:
     if not ts:
         return None
@@ -665,11 +522,8 @@ def tick() -> None:
     except Exception as e:  # noqa: BLE001
         store.log(f"journal error: {e}", level="warn", source="journal")
 
-    try:
-        for n in meeting_prep():
-            store.log(n, source="prep")
-    except Exception as e:  # noqa: BLE001 - a bad snapshot must not stall the loop
-        store.log(f"prep error: {e}", level="warn", source="prep")
+    if config.ASSISTANT:
+        _ahooks.tick_prep()  # the meeting-prep toast
 
     # The unprompted nudges: threads gone quiet, a milestone approaching, cards past
     # their date. Each dedupes against the notice store, so this is a few list
@@ -680,15 +534,8 @@ def tick() -> None:
     except Exception as e:  # noqa: BLE001
         store.log(f"nudges error: {e}", level="warn", source="nudges")
 
-    # Outreach holds expiring. Placed AFTER nudges and before notify so that a message
-    # Otto decides to send is recorded and toasted in the same tick it is composed,
-    # and BEFORE deliver_pending so the "held, sends in 10 min" toast is not a tick
-    # behind the hold it describes.
-    try:
-        for n in outreach.settle(store):
-            store.log(n, source="outreach")
-    except Exception as e:  # noqa: BLE001
-        store.log(f"outreach error: {e}", level="warn", source="outreach")
+    if config.ASSISTANT:
+        _ahooks.tick_settle()  # outreach holds expiring; the hook says why it sits here
 
     # Feed ingestion. Before notify.deliver_pending, so a notice a producer just
     # dropped gets its toast this tick instead of waiting for the next one.
@@ -703,39 +550,8 @@ def tick() -> None:
     except Exception as e:  # noqa: BLE001
         store.log(f"feed ingest error: {e}", level="warn", source="feed")
 
-    # Dossier last_contact from the DM producer's direction facts. Deterministic and
-    # forward-only, and gated on the spool file's mtime, so a normal tick costs one
-    # stat(). This is the writer that keeps "last spoke Nd ago" true: before it
-    # existed the field was written once at seeding and never advanced again.
-    try:
-        for n in people.ingest_spool_contacts():
-            store.log(n, source="contacts")
-    except Exception as e:  # noqa: BLE001
-        store.log(f"contact ingest error: {e}", level="warn", source="contacts")
-
-    # Somebody reacting :otto-help: in the support channel is a request for an answer, and it
-    # is answered within the minute rather than at the next four-hourly sweep. This
-    # is also where the summon gate stops being prose and starts being code: the
-    # session is handed one thread, so it never decides whether it was summoned.
-    global _last_summon
-    if time.time() - _last_summon > config.SUMMON_EVERY_SECONDS:
-        _last_summon = time.time()
-        try:
-            for n in summon.poll(store):
-                store.log(n, source="summon")
-        except Exception as e:  # noqa: BLE001
-            store.log(f"summon poll error: {e}", level="warn", source="summon")
-
-    # The owner DMing Otto from a phone. Checked more often than the summon poll because
-    # somebody is waiting on the other end of it.
-    global _last_dm
-    if time.time() - _last_dm > config.DM_EVERY_SECONDS:
-        _last_dm = time.time()
-        try:
-            for n in inbox.poll(store):
-                store.log(n, source="dm")
-        except Exception as e:  # noqa: BLE001
-            store.log(f"DM poll error: {e}", level="warn", source="dm")
+    if config.ASSISTANT:
+        _ahooks.tick_ingest()  # dossier contacts, summons, the DM inbox
 
     try:
         for n in notify.deliver_pending(store):
@@ -785,6 +601,7 @@ async def lifespan(app: FastAPI):
     seed_schedules()
     with store.lock:
         setup.migrate(store)
+        setup.pin_integrations(store)
     store.log(f"{config.PERSONA_NAME} daemon up on {config.BASE_URL}", source="daemon")
     if config.HERDR_AUTOSTART:
         # The harness before the first tick looks for panes. Nothing here may stop
@@ -843,6 +660,15 @@ app.add_middleware(OriginGuard, allowed_origins=config.ALLOWED_ORIGINS,
 from . import web_term  # noqa: E402  # mounted here so the terminal routes live on the one app
 web_term.register(app)
 from . import web_events  # noqa: E402  # same reason: the change socket lives on the one app
+
+if config.ASSISTANT:
+    # The only place the daemon imports the assistant modules. Under the core
+    # profile these never load, their routes do not exist, and the tick hooks above
+    # are never called; tests/test_scope.py checks all three from a subprocess.
+    from .assistant import hooks as _ahooks  # noqa: E402  # after `app`, by design
+    from .assistant import routes as _aroutes  # noqa: E402
+    _ahooks.install(store, journal_age_hours=journal_age_hours)
+    _aroutes.install(app, store)
 web_events.register(app, store)
 
 
@@ -1208,10 +1034,6 @@ def _compute_state() -> dict[str, Any]:
         "board": board.build(store),
         "snapshots": {k: v.model_dump() for k, v in store.snapshots().items()},
         "notices": [n.model_dump() for n in store.notices()[:40]],
-        # Held messages first: they are the only thing in this payload with a deadline
-        # that the owner can still act on.
-        "outreach": {"summary": outreach.summary(store),
-                     "items": [o.model_dump() for o in store.outreach()[:20]]},
         "day": store.get_day(datetime.now().astimezone().date().isoformat()),
         "day_prev": store.get_day(journal.yesterday().isoformat()),
         "machine": [m.model_dump() for m in machine.snapshot()] if config.MACHINE_PANEL else [],
@@ -1219,11 +1041,13 @@ def _compute_state() -> dict[str, Any]:
         "briefing": _cached_briefing(),
         "dispatch": dispatch.status(store),
         "logistics": logistics.view(store),
-        "writing": writing.summary(store),
         "autorun": get_autorun(),
         "live": get_live(),
         "sessions": list_sessions(),
         "events": [e.model_dump() for e in store.events(config.STATE_EVENTS)],
+        # outreach and writing: the assistant's keys, empty shapes under core so the
+        # dashboard's reads stay defined.
+        **(_ahooks.state_extra() if config.ASSISTANT else assistant.STATE_EMPTY),
     }
 
 
@@ -1310,32 +1134,6 @@ def slack_tell(req: TellRequest) -> dict[str, Any]:
         raise HTTPException(400, str(e)) from e
     store.log(f"told {config.OWNER_NAME}: {req.text[:60]}", source="slack")
     return {"ok": True, "channel": channel, "ts": ts}
-
-
-class DmRequest(BaseModel):
-    """Otto DMing a colleague AND the owner, as Otto, because the owner asked for it."""
-
-    to: list[str]
-    text: str
-    why: str = ""
-    run_id: str | None = None
-    task_id: str | None = None
-
-
-@app.post("/api/slack/dm")
-def slack_dm(req: DmRequest) -> dict[str, Any]:
-    """Group DM (Otto, the owner, the named people), sent now as Otto. The door a board
-    task or otto-dm session uses when the owner told it to message someone. The roster
-    gate and the per-run brake are applied in outreach.directed, in Python, before
-    anything is transmitted; the bot credential never leaves the daemon."""
-    try:
-        item = outreach.directed(store, to=req.to, body=req.text, why=req.why,
-                                 run_id=req.run_id, task_id=req.task_id)
-    except outreach.Refused as e:
-        raise HTTPException(400, str(e)) from e
-    if item.state != "sent":
-        raise HTTPException(502, item.error or "send failed")
-    return {"ok": True, "id": item.id, "to": item.to, "state": item.state}
 
 
 @app.get("/api/spend")
@@ -1815,87 +1613,6 @@ def open_session(session_id: str) -> dict[str, Any]:
     return {"ok": ok, "message": msg}
 
 
-@app.get("/api/threads")
-def list_threads(band: str | None = None) -> dict[str, Any]:
-    """Every dated dossier thread, computed live.
-
-    Live rather than read off the threads-quiet notice, and that is the point. The
-    notice froze 8 of 23 rows into a string hours ago; this is all of them as they
-    are now, so acting on one and coming back shows the change.
-    """
-    rows = nudges.thread_rows(store)
-    if band:
-        rows = [r for r in rows if r["band"] == band]
-    for r in rows:
-        r["notes"] = triage.notes_for(store, r["id"], limit=5)
-        r["runs"] = triage.runs_for(store, r["id"])
-    counts: dict[str, int] = {}
-    for r in nudges.thread_rows(store):
-        counts[r["band"]] = counts.get(r["band"], 0) + 1
-    return {
-        "rows": rows,
-        "counts": counts,
-        "bands": {"stale_days": config.NUDGE_THREAD_STALE_DAYS,
-                  "max_days": config.NUDGE_THREAD_MAX_DAYS},
-        "in_flight": len(triage.active_runs(store)),
-    }
-
-
-class ThreadNote(BaseModel):
-    thread_id: str
-    note: str
-
-
-class ThreadResolve(BaseModel):
-    text: str
-
-
-@app.post("/api/threads/{thread_id}/resolve")
-def resolve_thread(thread_id: str, req: ThreadResolve) -> dict[str, Any]:
-    """Rewrite a thread line in place, so it stops being reported as quiet.
-
-    Separate from a plain dossier note because appending does not end a thread: the
-    dated line that made it stale stays in the file and keeps reporting. This is the
-    verb that actually closes one.
-    """
-    from . import people as _people
-    thread = nudges.find_thread(store, thread_id)
-    if thread is None:
-        raise HTTPException(404, f"no thread {thread_id}; the dossier may have changed")
-    try:
-        ok = _people.replace_note(thread["slug"], "Threads", thread["text"], req.text)
-    except (ValueError, FileNotFoundError) as e:
-        raise HTTPException(422, str(e)) from e
-    if not ok:
-        raise HTTPException(409, "the thread line no longer matches; it was edited "
-                                 "since this view loaded")
-    with contextlib.suppress(Exception):
-        store.log(f"thread resolved for {thread['who']}: {req.text[:80]}",
-                  source="thread-note")
-    return {"ok": True, "slug": thread["slug"], "text": req.text}
-
-
-@app.post("/api/threads/note")
-def post_thread_note(req: ThreadNote) -> dict[str, Any]:
-    """The owner's note on one thread. Records it, then spawns Otto's judgement.
-
-    The verb is deliberately not chosen here (decided 2026-08-05): the session picks
-    from a closed list in `triage.PROMPT_TEMPLATE`. Everything colleague-facing in
-    that list still goes through the outreach hold, which is enforced in
-    `outreach.compose` rather than in the prompt.
-    """
-    thread = nudges.find_thread(store, req.thread_id)
-    if thread is None:
-        # A thread id encodes its text, so an edited dossier line becomes a new id.
-        raise HTTPException(404, f"no thread {req.thread_id}; the dossier may have "
-                                 f"changed since this view loaded")
-    try:
-        run = triage.submit(store, thread, req.note)
-    except triage.Refused as e:
-        raise HTTPException(409, str(e)) from e
-    return {"run": run.model_dump(), "thread_id": thread["id"]}
-
-
 @app.post("/api/sessions/{state}")
 def record_session(state: str, payload: dict[str, Any]) -> dict[str, Any]:
     """Ingest one Claude Code hook event. Called by scripts/otto_hook.py.
@@ -2292,32 +2009,6 @@ def post_refresh(domain: str = "all") -> dict[str, Any]:
     return {"runs": started, "skipped": skipped}
 
 
-@app.get("/api/meetings")
-def get_meetings() -> dict[str, Any]:
-    return meetings.status(store)
-
-
-@app.post("/api/meetings/ingest")
-def post_meetings_ingest() -> dict[str, Any]:
-    """Read any new Notion meeting notes and file the action items.
-
-    One at a time, deliberately. Two concurrent ingesters would both read the same
-    pages before either updated the ledger, and page-id dedupe cannot help when
-    neither run has written yet.
-    """
-    in_flight = next((r for r in store.runs()
-                      if r.status == "running" and "mode=ingest" in (r.notes or "")), None)
-    if in_flight is not None:
-        raise HTTPException(409, f"an ingest is already running ({persona.short(in_flight.id)})")
-    try:
-        run = meetings.start(store)
-    except (OSError, RuntimeError, ValueError) as e:
-        raise HTTPException(500, f"could not start the meeting ingest: {e}") from e
-    store.upsert_run(run)
-    store.log("meeting-notes ingest started", source="meetings", run_id=run.id)
-    return {"run": run.model_dump()}
-
-
 # ---- setup: first run -----------------------------------------------------------
 # One engine behind the dashboard's Setup view and `otto setup` (otto/setup.py).
 # Everything here is loopback and goes through OriginGuard like every other route.
@@ -2488,19 +2179,6 @@ def get_config() -> dict[str, Any]:
     return {**configsync.summary(), "home": str(config.HOME)}
 
 
-class CheckinRequest(BaseModel):
-    """The owner's own report. Deliberately free text plus one optional number: the
-    ask was for two or three lines, not a form, and a form that will not get filled
-    in is worth less than a sentence that will."""
-
-    note: str | None = None
-    energy: int | None = None      # 1-5, optional
-    # The signals from the owner's operating profile (otto/wellbeing.py). Every one is
-    # optional and three-state: absent means "not asked", NOT "no". The note above
-    # stays sufficient on its own, which is the constraint this had to be built under.
-    signals: dict[str, Any] | None = None
-
-
 class NoticeRequest(BaseModel):
     title: str
     body: str | None = None
@@ -2557,90 +2235,6 @@ def remove_notice(notice_id: str) -> dict[str, Any]:
     return {"removed": notice_id}
 
 
-class OutreachRequest(BaseModel):
-    """Composing a message to a colleague. Every field except `tier` is load-bearing.
-
-    `why` has no default on purpose. It is what the owner vetoes on, and a producer that
-    cannot say why it is messaging somebody has not thought about it enough to be
-    allowed to.
-    """
-
-    to: str
-    body: str
-    why: str
-    source: str = "otto"
-    tier: int = 0
-    channel: Literal["slack-dm", "slack-channel"] = "slack-dm"
-    hold_minutes: int | None = None
-    run_id: str | None = None
-    task_id: str | None = None
-
-
-@app.get("/api/outreach")
-def get_outreach(state: str | None = None) -> dict[str, Any]:
-    items = store.outreach()
-    if state:
-        items = [o for o in items if o.state == state]
-    return {"summary": outreach.summary(store),
-            "items": [o.model_dump() for o in items[:100]]}
-
-
-@app.post("/api/outreach")
-def post_outreach(req: OutreachRequest) -> dict[str, Any]:
-    """Compose and hold. Never sends inline, whatever the caller wants.
-
-    A 400 here is a REFUSAL with a reason, not a validation error: it is the gate
-    telling a producer that this message will not be sent and why, which is
-    information the producer should act on rather than retry.
-    """
-    try:
-        o = outreach.compose(
-            store, to=req.to, body=req.body, why=req.why, source=req.source,
-            tier=req.tier, channel=req.channel, hold_minutes=req.hold_minutes,
-            run_id=req.run_id, task_id=req.task_id)
-    except outreach.Refused as e:
-        raise HTTPException(400, f"refused: {e}") from None
-    # The owner is told, every time, at warn level. An outreach never seen held is an
-    # outreach he had no window on, which would make the hold decorative.
-    notify.post(
-        store, f"Otto wants to message {o.to}",
-        body=(f"{o.body}\n\nwhy: {o.why}\n\n"
-              f"sends in {o.hold_minutes} min unless you stop it: "
-              f"otto outreach kill {o.id[:6]}"),
-        level="warn", domain=config.WORK, source="outreach",
-        command=f"otto outreach kill {o.id[:6]}", notify=True)
-    return o.model_dump()
-
-
-@app.post("/api/outreach/{oid}/kill")
-def kill_outreach(oid: str) -> dict[str, Any]:
-    o = outreach.kill(store, oid)
-    if o is None:
-        raise HTTPException(404, f"no held outreach matching {oid}")
-    return o.model_dump()
-
-
-@app.post("/api/outreach/{oid}/send")
-def send_outreach(oid: str) -> dict[str, Any]:
-    """The owner choosing not to wait out the hold."""
-    o = outreach.send_now(store, oid)
-    if o is None:
-        raise HTTPException(404, f"no held outreach matching {oid}")
-    return o.model_dump()
-
-
-@app.post("/api/outreach/{oid}/extend")
-def extend_outreach(oid: str, minutes: int = 10) -> dict[str, Any]:
-    """The owner buying time on the hold without deciding. Held messages only."""
-    try:
-        o = outreach.extend(store, oid, minutes)
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from None
-    if o is None:
-        raise HTTPException(404, f"no held outreach matching {oid}")
-    return o.model_dump()
-
-
 # ---- known failures ---------------------------------------------------------
 # A schedule or integration the owner has said is broken and knows why. See known.py.
 
@@ -2668,16 +2262,6 @@ def delete_known(kind: str, name: str) -> dict[str, Any]:
     return {"removed": known.key(kind, name)}
 
 
-@app.get("/api/patterns")
-def get_patterns(days: int = 90) -> dict[str, Any]:
-    """What his check-ins say actually moves his energy.
-
-    Read-only and deterministic, like `otto next` and for the same reason: this is the
-    thing he should be able to look at often, so it must be instant and free.
-    """
-    return wellbeing.patterns(store, days=days)
-
-
 @app.get("/api/day/{day}")
 def get_day(day: str, refresh: bool = False) -> dict[str, Any]:
     """A day record: the transcript rollup plus whatever the owner reported.
@@ -2692,33 +2276,6 @@ def get_day(day: str, refresh: bool = False) -> dict[str, Any]:
     rec = store.get_day(day)
     if refresh or not rec.get("rollup"):
         rec = store.put_day(day, {"rollup": journal.rollup(d)})
-    return rec
-
-
-@app.put("/api/day/{day}")
-def put_day(day: str, req: CheckinRequest) -> dict[str, Any]:
-    try:
-        _dt.date.fromisoformat(day)
-    except ValueError:
-        raise HTTPException(400, f"not an ISO date: {day!r}") from None
-    if req.energy is not None and not 1 <= req.energy <= 5:
-        raise HTTPException(400, "energy must be 1-5")
-    checkin = {k: v for k, v in
-               {"note": req.note, "energy": req.energy, "at": iso(utcnow())}.items()
-               if v is not None}
-    for key, value in (req.signals or {}).items():
-        sig = wellbeing.BY_KEY.get(key)
-        if sig is None:
-            raise HTTPException(400, f"unknown signal {key!r}")
-        if sig.kind == "bool" and not isinstance(value, bool):
-            raise HTTPException(400, f"{key} must be true/false")
-        if sig.kind == "scale" and not (isinstance(value, int) and 1 <= value <= 5):
-            raise HTTPException(400, f"{key} must be 1-5")
-        checkin[key] = value
-    # put_day MERGES, so signals added later in the evening join the morning's note
-    # rather than replacing it. That is what makes a partial check-in safe to do twice.
-    rec = store.put_day(day, {"checkin": checkin})
-    store.log(f"check-in recorded for {day}", source="journal")
     return rec
 
 
@@ -3033,91 +2590,6 @@ def get_registry(kind: str | None = None, domain: str | None = None) -> list[dic
     return [e.model_dump() for e in entries]
 
 
-@app.get("/api/people")
-def get_people(q: str | None = None) -> list[dict[str, Any]]:
-    """Operational dossiers. Read straight off disk rather than from state: they are
-    plain markdown owned half by the directory sync and half by the owner, and putting them through the
-    single-writer store would mean the daemon rewriting files a human edits by hand.
-
-    `mobilePhone` is deliberately dropped from the list payload. The dashboard binds to
-    127.0.0.1 so this is not an exposure, but sixty phone numbers rendered on a summary
-    screen is not something any view here needs, and the detail endpoint has it.
-    """
-    from . import people as _people
-    rows = [{k: v for k, v in d.items() if k != "mobilePhone"} for d in _people.load()]
-    if q:
-        needle = q.casefold()
-        rows = [d for d in rows if any(needle in str(v).casefold() for v in d.values())]
-    return rows
-
-
-@app.get("/api/people/{slug}")
-def get_person(slug: str) -> dict[str, Any]:
-    from . import people as _people
-    d = _people.get(slug)
-    if d is None:
-        raise HTTPException(status_code=404, detail=f"no dossier for {slug}")
-    # Slug comes from our own listing, but it lands in a path join, so refuse anything
-    # that could climb out of PEOPLE_DIR rather than trusting the caller.
-    safe = _people.PEOPLE_DIR / f"{d['slug']}.md"
-    if safe.parent.resolve() != _people.PEOPLE_DIR.resolve() or not safe.is_file():
-        raise HTTPException(status_code=404, detail="dossier not readable")
-    return {**d, "markdown": safe.read_text(encoding="utf-8", errors="replace")}
-
-
-class PersonPatch(BaseModel):
-    meta: dict[str, str] | None = None        # pronouns, full_name, last_contact, ...
-    note: str | None = None
-    section: str | None = None                # required when `note` is present
-
-
-@app.patch("/api/people/{slug}")
-def patch_person(slug: str, req: PersonPatch) -> dict[str, Any]:
-    """Edit a dossier from the UI. The daemon is the writer, same as everywhere else.
-
-    Validation lives in people.py rather than here so the CLI and the API cannot drift
-    on what counts as an editable field or a real section.
-    """
-    from . import people as _people
-    if _people.get(slug) is None:
-        raise HTTPException(status_code=404, detail=f"no dossier for {slug}")
-    changed: list[str] = []
-    try:
-        if req.meta:
-            _people.set_meta(slug, req.meta)
-            changed.append("meta: " + ", ".join(sorted(req.meta)))
-        if req.note is not None:
-            if not req.section:
-                raise HTTPException(status_code=422, detail="note requires a section")
-            _people.add_note(slug, req.section, req.note)
-            changed.append(f"note -> {req.section}")
-    except (ValueError, FileNotFoundError) as e:
-        raise HTTPException(status_code=422, detail=str(e)) from e
-
-    if changed:
-        # The file write has already landed. A failure to record the event must not
-        # turn a successful edit into a 500, because the caller would retry and write
-        # the note twice. Same ordering rule as notify.py: persist first, tell second.
-        with contextlib.suppress(Exception):
-            store.log(f"dossier {slug}: {'; '.join(changed)}", source="people")
-    d = _people.get(slug)
-    safe = _people.PEOPLE_DIR / f"{d['slug']}.md"
-    return {**d, "markdown": safe.read_text(encoding="utf-8", errors="replace"),
-            "changed": changed}
-
-
-@app.get("/api/people/meta/schema")
-def people_meta_schema() -> dict[str, Any]:
-    """What the UI is allowed to edit, so the form is generated rather than hardcoded."""
-    from . import people as _people
-    return {
-        "fields": [{"key": k, "hint": _people.META_HINTS[k]} for k in _people.META_FIELDS],
-        "sections": [h for h, _ in _people.SECTIONS],
-        "dated_sections": sorted(_people.DATED_SECTIONS),
-        "pronoun_suggestions": list(_people.PRONOUN_SUGGESTIONS),
-    }
-
-
 @app.post("/api/registry/scan")
 def scan_registry() -> dict[str, Any]:
     notes = refresh_registry()
@@ -3338,73 +2810,6 @@ def post_supersede(decision_id: str, req: DecisionRequest) -> dict[str, Any]:
     store.log(f"decision {new.id} supersedes {old.id}: {new.title[:50]}",
               level="warn", source="decision")
     return {"superseded": old.model_dump(), "decision": new.model_dump()}
-
-
-class PostPatch(BaseModel):
-    status: str | None = None
-    url: str | None = None
-    note: str | None = None
-    draft: str | None = None
-
-
-class DraftRequest(BaseModel):
-    note: str | None = None
-
-
-@app.get("/api/writing")
-def get_writing() -> dict[str, Any]:
-    return writing.status(store)
-
-
-@app.get("/api/writing/{post_id}")
-def get_post(post_id: str) -> dict[str, Any]:
-    p = store.get_post(post_id)
-    if p is None:
-        raise HTTPException(404, f"no post {post_id}")
-    return p.model_dump()
-
-
-@app.post("/api/writing/ideas")
-def post_writing_ideas() -> dict[str, Any]:
-    """Mine the window for post ideas now, rather than waiting for the weekly run."""
-    try:
-        run = writing.start_ideas(store)
-    except ValueError as e:
-        raise HTTPException(409, str(e)) from e
-    except (OSError, RuntimeError) as e:
-        raise HTTPException(500, f"could not start the ideas run: {e}") from e
-    store.upsert_run(run)
-    store.log("writing: ideas run started", source="writing", run_id=run.id)
-    return {"run": run.model_dump()}
-
-
-@app.post("/api/writing/{post_id}/draft")
-def post_writing_draft(post_id: str, req: DraftRequest | None = None) -> dict[str, Any]:
-    """Draft one post, or redraft it with a note about what to change."""
-    try:
-        run, post = writing.start_draft(store, post_id, (req.note if req else None))
-    except ValueError as e:
-        code = 404 if str(e).startswith("no post") else 409
-        raise HTTPException(code, str(e)) from e
-    except (OSError, RuntimeError) as e:
-        raise HTTPException(500, f"could not start the draft: {e}") from e
-    store.upsert_run(run)
-    store.log(f"writing: drafting {post.id} ({post.hook[:50]})", source="writing", run_id=run.id)
-    return {"run": run.model_dump(), "post": post.model_dump()}
-
-
-@app.patch("/api/writing/{post_id}")
-def patch_post(post_id: str, req: PostPatch) -> dict[str, Any]:
-    try:
-        post = writing.set_status(store, post_id, req.status, url=req.url,
-                                  note=req.note, draft=req.draft)
-    except ValueError as e:
-        code = 404 if str(e).startswith("no post") else 400
-        raise HTTPException(code, str(e)) from e
-    # Persist first, tell second; a failed event write must not 500 a landed edit.
-    with contextlib.suppress(Exception):
-        store.log(f"writing: {post.id} -> {post.status}", source="writing")
-    return post.model_dump()
 
 
 @app.get("/api/retire")

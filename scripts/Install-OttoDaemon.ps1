@@ -21,14 +21,16 @@
     until the schedule actually runs, so a machine that was asleep at 08:00 picks the
     run up when it wakes.
 
-    Nothing here is destructive: the profile edit is delimited by markers and
-    idempotent, and existing tasks are only replaced after you confirm.
+    Nothing here is destructive: the package install is editable and idempotent,
+    an old profile block (delimited by markers) is removed, and existing tasks are
+    only replaced after you confirm.
 
 .PARAMETER SkipTasks
     Install the `otto` command only.
 
 .PARAMETER Uninstall
-    Remove both scheduled tasks and the profile block. State is left alone.
+    Remove both scheduled tasks and any old profile block. State and the installed
+    package are left alone (pip uninstall otto removes the package).
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\scripts\Install-OttoDaemon.ps1
@@ -84,21 +86,15 @@ if ($Uninstall) {
 
 # ---------------------------------------------------------------- 1. `otto` command
 
-$profileDir = Split-Path -Parent $PROFILE
-if (-not (Test-Path $profileDir)) { New-Item -ItemType Directory -Force -Path $profileDir | Out-Null }
-if (-not (Test-Path $PROFILE))    { New-Item -ItemType File -Path $PROFILE | Out-Null }
-
+# An editable install puts `otto` on PATH (Python's Scripts directory) and makes
+# `python -m otto` work from any directory. Older installs carried a profile
+# function that set PYTHONPATH; it is removed so the console script is the one
+# entry point.
 Remove-ProfileBlock
-Add-Content -Path $PROFILE -Encoding utf8 -Value @"
-$beginMark
-function otto {
-    `$env:PYTHONPATH = if (`$env:PYTHONPATH) { "$repoRoot;`$env:PYTHONPATH" } else { "$repoRoot" }
-    & python -m otto @args
-}
-$endMark
-"@
-Say "installed 'otto' into $PROFILE" 'Green'
-Say "open a new shell, or run: . `$PROFILE" 'DarkGray'
+& python -m pip install --quiet -e $repoRoot
+if ($LASTEXITCODE -ne 0) { throw "pip install -e $repoRoot failed" }
+Say "installed the otto package (editable) from $repoRoot" 'Green'
+Say "the 'otto' command is on PATH in a new shell" 'DarkGray'
 
 if ($SkipTasks) {
     Say "skipped the scheduled tasks (-SkipTasks). Start manually with: otto serve"

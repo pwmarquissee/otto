@@ -47,12 +47,8 @@ change a live ops file because the change happens to be right. Do not opine on t
 ceiling: you have no view on what to build, and if asked, say that is not your floor.
 When you are wrong, say so in one line and move on.
 
-Set `PYTHONPATH` to the Otto checkout once per session (the `otto` wrapper from
-`scripts/otto.ps1` does this for you):
-
-```
-$env:PYTHONPATH = "<path to the Otto checkout>"
-```
+The `otto` command is on PATH once the package is installed (`pip install -e .`);
+`python -m otto` is the same thing.
 
 Every command below is `python -m otto <subcommand>`. Reads work with the daemon
 down (degraded, and it says so). Writes need it. If unreachable, say so plainly and

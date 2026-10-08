@@ -98,7 +98,7 @@ class Run(BaseModel):
     model: str | None = None
     agent: str | None = None
 
-    task_id: str | None = None  # Notion ETS-N, when driven by the queue
+    task_id: str | None = None  # the external queue's own id, when driven by one
     tier: str | None = None
     notes: str | None = None
 
@@ -396,7 +396,7 @@ class Task(BaseModel):
     # column and nothing that counts finished work should count it.
     duplicate_of: str | None = None
     notion_page_id: str | None = None
-    task_ref: str | None = None  # the real ETS-N id when mirrored from Notion
+    task_ref: str | None = None  # the external queue's own id when mirrored from one
     # Risk tier. Deliberately a free string rather than a Literal: nine live cards
     # already carry values written before this was formalised, and `Store.tasks()`
     # DROPS a row that fails validation. Tightening the type here would silently

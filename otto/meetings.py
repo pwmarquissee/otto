@@ -41,7 +41,7 @@ from pathlib import Path
 
 import psutil
 
-from . import config, dedupe, findings, notify
+from . import config, dedupe, findings, launcher, notify
 from .models import Run, Task, iso, utcnow
 from .runners import detached
 # Reused deliberately rather than copied: a model told to emit bare JSON will
@@ -199,26 +199,18 @@ def _build_prompt(store: Store) -> str:
 
 
 def _launcher(run_id: str, prompt_file: Path) -> Path:
-    q = detached._ps_quote
-    lines = [
-        "$ErrorActionPreference = 'Continue'",
-        f"Set-Location -LiteralPath {q(config.CHAT_CWD)}",
-        f"$prompt = Get-Content -LiteralPath {q(prompt_file)} -Raw",
-        "$claudeArgs = @('-p', '--output-format', 'stream-json', '--verbose')",
-        "$claudeArgs += '--dangerously-skip-permissions'",
-        # The one control that was measured to actually restrict this session. See
-        # DENIED_TOOLS above for why there is no allow-list here.
-        f"$claudeArgs += @('--disallowed-tools', {q(' '.join(DENIED_TOOLS))})",
-        *([f"$claudeArgs += @('--max-budget-usd', '{config.MEETINGS_BUDGET_USD}')"]
-          if config.MEETINGS_BUDGET_USD else []),
-        *([f"$claudeArgs += @('--model', {q(config.MEETINGS_MODEL)})"]
-          if config.MEETINGS_MODEL else []),
-        "$prompt | & claude @claudeArgs",
-        "exit $LASTEXITCODE",
-    ]
-    p = config.LOG_DIR / f"{run_id[:6]}-meetings.launch.ps1"
-    p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return p
+    args = ["-p", "--output-format", "stream-json", "--verbose",
+            "--dangerously-skip-permissions",
+            # The one control that was measured to actually restrict this session. See
+            # DENIED_TOOLS above for why there is no allow-list here.
+            "--disallowed-tools", " ".join(DENIED_TOOLS)]
+    if config.MEETINGS_BUDGET_USD:
+        args += ["--max-budget-usd", str(config.MEETINGS_BUDGET_USD)]
+    if config.MEETINGS_MODEL:
+        args += ["--model", config.MEETINGS_MODEL]
+    return launcher.write_claude(
+        config.LOG_DIR / f"{run_id[:6]}-meetings",
+        launcher.ClaudeSpec(cwd=str(config.CHAT_CWD), prompt_file=prompt_file, args=tuple(args)))
 
 
 def start(store: Store) -> Run:
@@ -230,8 +222,7 @@ def start(store: Store) -> Run:
     prompt_file.write_text(_build_prompt(store), encoding="utf-8")
     log = config.LOG_DIR / f"{run_id[:6]}-meetings.log"
 
-    cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-           "-File", str(_launcher(run_id, prompt_file))]
+    cmd = launcher.command(_launcher(run_id, prompt_file))
     fh = log.open("w", encoding="utf-8", errors="replace")
     try:
         proc = subprocess.Popen(

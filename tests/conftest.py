@@ -37,6 +37,10 @@ os.environ["OTTO_NO_TOAST"] = "1"
 # A port nothing real listens on, so a stray client call fails fast instead of
 # reaching a live daemon.
 os.environ["OTTO_PORT"] = "8799"
+# The whole package, not the core scope: the suite exercises outreach, people,
+# writing and the rest, and tests/test_scope.py checks the core cut from a
+# subprocess of its own.
+os.environ["OTTO_SCOPE"] = "assistant"
 
 import pytest  # noqa: E402
 

@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "otto"
+dynamic = ["version"]
+description = "A local daemon and dashboard for running a lot of Claude Code sessions at once."
+readme = "README.md"
+requires-python = ">=3.13"
+license = { text = "MIT" }
+# Lower bounds only, so Otto coexists with whatever else is installed. The exact
+# set a fresh install gets is requirements.lock (uv pip compile), which CI uses.
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "pydantic>=2.6",
+    "psutil>=5.9",
+    "requests>=2.31",
+    "websockets>=12",   # uvicorn's WebSocket backend for /ws/events and /ws/term
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",      # fastapi.testclient
+]
+
+[project.scripts]
+# `otto` on PATH after `pip install -e .`; `python -m otto` is the same entry.
+otto = "otto.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "otto.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["otto*"]
+
+[tool.setuptools.package-data]
+otto = ["web/*", "web/vendor/*", "web/vendor/**/*"]

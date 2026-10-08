@@ -1,11 +1,13 @@
-"""Absorb the existing orchestrator ledgers.
+"""Absorb the stamp ledgers of a predecessor scheduler, if there is one.
 
-Reads (never writes) the files under ~/.claude/orchestrator so Otto starts with
-real history instead of a blank slate. Stamps are backdated to their original
+Reads (never writes) the files under OTTO_ORCHESTRATOR_DIR (default
+~/.claude/orchestrator), the layout of the script-based scheduler Otto replaced,
+so an install that had one starts with real history instead of a blank slate. On
+a machine without that directory `otto migrate` reports nothing to do. Stamps are backdated to their original
 timestamps, which is the point: importing a 25-day-old `daily` stamp should
 immediately surface as STALE, not look like a fresh success.
 
-The original ledgers are left untouched, so heartbeat.py keeps working while you
+The original ledgers are left untouched, so the predecessor keeps working while you
 decide whether to retire it.
 """
 

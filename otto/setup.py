@@ -74,6 +74,27 @@ def migrate(store: Store) -> bool:
     return True
 
 
+def pin_integrations(store: Store) -> bool:
+    """An install that predates OTTO_INTEGRATIONS ran every probe, because unset
+    used to mean all. Unset now means none (a probe is outbound traffic, and an
+    unconfigured daemon talks to nothing), so the first daemon start on this code
+    writes the full list into otto.env for a migrated install and applies it in
+    process. A fresh install is left alone: its setup step asks. Returns True
+    when it wrote."""
+    if config.INTEGRATIONS_SET or "OTTO_INTEGRATIONS" in _file():
+        return False
+    if not store.setup().get("migrated"):
+        return False
+    from .runners import external
+    names = external.probe_names()
+    settings.write({"OTTO_INTEGRATIONS": ",".join(names)}, config.SETTINGS_PATH)
+    config.INTEGRATIONS = tuple(names)
+    config.INTEGRATIONS_SET = True
+    store.log(f"setup: pinned OTTO_INTEGRATIONS={','.join(names)} for a pre-setting install "
+              "(unset now means no probes); edit otto.env to trim it", source="setup")
+    return True
+
+
 def skipped(store: Store) -> dict[str, str]:
     data = store.setup().get("skipped") or {}
     return data if isinstance(data, dict) else {}
@@ -310,7 +331,7 @@ def step_integrations(store: Store) -> dict[str, Any]:
         on = config.INTEGRATIONS or ()
         summary = (f"Probing {', '.join(on)}" if on else "No integration probes")
     else:
-        summary = "Every probe runs; unused ones report red forever"
+        summary = "No probe runs until you pick some; nothing leaves the box unconfigured"
     chosen = (set(x.strip().lower() for x in filed["OTTO_INTEGRATIONS"].split(","))
               if filed_set else set(config.INTEGRATIONS or [c[0] for c in INTEGRATION_CHOICES]))
     options = [{"value": v, "label": label, "hint": hint, "checked": v in chosen}
