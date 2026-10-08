@@ -711,10 +711,22 @@ def _slim_detail(row: dict[str, Any]) -> None:
         row["detail"] = detail[: config.STATE_DETAIL_CHARS]
         row["detail_truncated"] = True
 
+def _slim_result(row: dict[str, Any]) -> None:
+    """Cut a run row's `result_summary` for the state payload, in place. A run
+    keeps up to detached.RESULT_CHARS of its final text (a PREPARE proposal is
+    that text); the rail draws a line of it and GET /api/runs/{id} has the
+    whole thing. `result_truncated` is present only when something was cut."""
+    text = row.get("result_summary")
+    if isinstance(text, str) and len(text) > config.STATE_DETAIL_CHARS:
+        row["result_summary"] = text[: config.STATE_DETAIL_CHARS]
+        row["result_truncated"] = True
+
 def _slim_state(payload: dict[str, Any]) -> dict[str, Any]:
     """Trim the fields the dashboard never draws in full. Everything else is kept."""
     for row in payload.get("tasks") or []:
         _slim_detail(row)
+    for row in payload.get("runs") or []:
+        _slim_result(row)
     for col in (payload.get("board") or {}).get("columns") or []:
         for card in col.get("cards") or []:
             _slim_detail(card)

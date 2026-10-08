@@ -404,6 +404,15 @@ def _shell_exit_code(run: Run) -> int | None:
     return int(found[-1]) if found else None
 
 
+# How much of a session's final text a Run keeps. It used to be 400 characters,
+# which read as a summary and was: dispatch copies it into the card's plan for a
+# PREPARE run, so every tier-1 proposal arrived cut mid-sentence and could not be
+# approved (DEBT: "PREPARE-mode proposals are truncated to 400 chars"). 20k holds
+# any plan a session writes; the state payload trims it the way it trims task
+# detail (daemon._slim_result), and GET /api/runs/{id} returns it whole.
+RESULT_CHARS = 20_000
+
+
 def _apply_result(run: Run, obj: dict) -> None:
     """Copy authoritative usage and outcome off the JSON result."""
     usage = obj.get("usage") or {}
@@ -424,7 +433,7 @@ def _apply_result(run: Run, obj: dict) -> None:
         run.num_turns = obj["num_turns"]
     result = obj.get("result")
     if isinstance(result, str) and result.strip():
-        run.result_summary = result.strip()[:400]
+        run.result_summary = result.strip()[:RESULT_CHARS]
 
     if obj.get("is_error") or obj.get("subtype") not in (None, "success"):
         run.status = "failed"

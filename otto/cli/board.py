@@ -94,6 +94,46 @@ def cmd_task_ls(args, client: Client) -> int:
     return 0
 
 
+def cmd_task_show(args, client: Client) -> int:
+    """One card, whole, read-only: every field a session or the owner might act
+    on, including the plan and the result that `task ls` has no room for."""
+    try:
+        t = client.task(args.id)
+    except RuntimeError as e:
+        print(f"  {e}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(t, indent=2))
+        return 0
+    print(_c(f"  {t['title']}", C_BOLD))
+    head = [("id", t["id"]), ("status", t.get("status")), ("priority", t.get("priority")),
+            ("domain", t.get("domain")), ("owner", t.get("owner")), ("tier", t.get("tier")),
+            ("agent", t.get("agent")), ("tags", ", ".join(t.get("tags") or []) or None),
+            ("origin", t.get("origin")), ("created", t.get("created_at")),
+            ("updated", t.get("updated_at")), ("due", t.get("due")),
+            ("run mode", t.get("run_mode")), ("plan approved", t.get("plan_approved")),
+            ("run", (t.get("run_id") or "")[:6] or None),
+            ("duplicate of", (t.get("duplicate_of") or "")[:6] or None)]
+    for k, v in head:
+        if v not in (None, "", []):
+            print(f"  {k:<14}{v}")
+    for label, key in (("DETAIL", "detail"), ("PLAN", "plan"), ("RESULT", "result"),
+                       ("LAST ERROR", "last_error")):
+        text = t.get(key)
+        if text:
+            print()
+            print(_c(f"  {label}", C_DIM))
+            for line in str(text).splitlines():
+                print(f"    {line}")
+    run = t.get("run")
+    if run:
+        print()
+        print(_c("  RUN", C_DIM))
+        print(f"    {run['id'][:6]} {run.get('status')} {run.get('name')}"
+              + (f" cost ${run['cost_usd']:.2f}" if run.get("cost_usd") else ""))
+    return 0
+
+
 def cmd_task_dedupe(args, client: Client) -> int:
     """Fold duplicate open cards into one. The tick does this on its own; the verb
     shows the plan, and lets a run's report carry what was folded."""
@@ -417,6 +457,11 @@ def add_task(sub) -> None:
                    help="list only cards merged into another as duplicates")
     a.add_argument("--json", action="store_true")
     a.set_defaults(fn=cmd_task_ls)
+
+    a = tsk_sub.add_parser("show", help="one card, whole and read-only (detail, plan, result)")
+    a.add_argument("id", help="task id or unique prefix")
+    a.add_argument("--json", action="store_true")
+    a.set_defaults(fn=cmd_task_show)
 
     a = tsk_sub.add_parser("dedupe", help="fold duplicate open cards into one (the tick does this too)")
     a.add_argument("--dry-run", action="store_true", help="show what would merge, change nothing")

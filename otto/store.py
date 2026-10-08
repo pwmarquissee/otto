@@ -111,6 +111,11 @@ class Store:
         # interleave read-modify-write cycles. Compound mutators hold this lock
         # across BOTH the read and the write. Reentrant so nesting is safe.
         self.lock = threading.RLock()
+        # Event appends that could not land (see append_event). A count and the
+        # last error, so `otto doctor` can say the log has holes rather than the
+        # holes being silent.
+        self.log_failures = 0
+        self.last_log_error: str | None = None
         # Sessions get their OWN lock, and the exception needs justifying because
         # everything else shares one. A session write is on the critical path of
         # every Claude Code turn on this machine: the hook blocks the turn until the
@@ -835,13 +840,36 @@ class Store:
     # ---- events (append-only) ----------------------------------------------
 
     def append_event(self, event: Event) -> None:
+        """Append one event line. Never raises for an I/O failure.
+
+        Every caller logs AFTER the write it describes has landed (persist first,
+        tell second, the ordering rule notify.py also follows). On Windows the
+        append can fail transiently with a sharing violation while a reader has
+        the events file, and when that exception reached FastAPI it turned a
+        landed board edit into a 500 with no did-it-land signal: the caller
+        retried and wrote twice (DEBT: `otto triage set` intermittent 500,
+        root-caused 2026-09-03). So the open is retried a few times, and a line
+        that still cannot land is counted and dropped. An event is a note about
+        a write, never the write; a hole in the log is the lesser failure.
+        WriteDenied still raises: that is a programming error, not I/O.
+        """
         if not config.is_daemon():
             raise WriteDenied("only the Otto daemon appends events")
         p = self._path(EVENTS)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with self.lock, p.open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(event.model_dump()) + "\n")
-        self._bump()
+        line = json.dumps(event.model_dump()) + "\n"
+        last: OSError | None = None
+        for attempt in range(4):
+            try:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                with self.lock, p.open("a", encoding="utf-8", newline="\n") as fh:
+                    fh.write(line)
+                self._bump()
+                return
+            except OSError as e:
+                last = e
+                time.sleep(0.02 * (attempt + 1))
+        self.log_failures += 1
+        self.last_log_error = f"{type(last).__name__}: {last}"
 
     def log(self, message: str, level: str = "info", source: str = "otto", **data: Any) -> None:
         self.append_event(Event(level=level, source=source, message=message, data=data))

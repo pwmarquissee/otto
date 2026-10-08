@@ -28,6 +28,9 @@ def health() -> dict[str, Any]:
         "persona": config.PERSONA_NAME,
         "pid": psutil.Process().pid,
         "state_dir": str(config.STATE_DIR),
+        # Event lines that could not be appended (store.append_event retries, then
+        # drops): a non-zero count means the log has holes, not that writes failed.
+        "log_failures": _d.store.log_failures,
         "at": iso(utcnow()),
     }
 
