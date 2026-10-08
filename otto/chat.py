@@ -18,7 +18,6 @@ conversation and this module only stores what the UI renders.
 
 from __future__ import annotations
 
-import json
 import subprocess
 import uuid
 from datetime import datetime, timezone

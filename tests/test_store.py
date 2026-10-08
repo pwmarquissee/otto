@@ -15,7 +15,7 @@ import pytest
 
 from otto import config
 from otto.models import Run, Task
-from otto.store import TASKS, Store, WriteDenied, _atomic_write
+from otto.store import TASKS, WriteDenied, _atomic_write
 
 
 # ---- writes are the daemon's alone -----------------------------------------

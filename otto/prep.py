@@ -61,7 +61,7 @@ from __future__ import annotations
 
 import re
 import textwrap
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, NamedTuple
 
 from . import config, people, today

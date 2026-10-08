@@ -36,7 +36,6 @@ import re
 import statistics
 from datetime import timedelta
 
-from . import config
 from .models import Run, utcnow
 
 # Schedules and modules whose runs share a name, so a prefix match is enough to

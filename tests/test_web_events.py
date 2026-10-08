@@ -21,7 +21,6 @@ from starlette.websockets import WebSocketDisconnect
 from otto import config, daemon, web_events
 from otto.models import Event
 from otto.originguard import OriginGuard
-from otto.store import Store
 
 from conftest import make_task
 

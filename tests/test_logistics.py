@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from otto import backlog, config, dispatch, herdr, logistics
-from otto.models import Proposal, Session, Task, iso, utcnow
+from otto.models import Session, Task, iso, utcnow
 
 # Task.owner for work the human does. "otto" is the other value.
 HUMAN = "owner"

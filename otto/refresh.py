@@ -24,7 +24,7 @@ from pathlib import Path
 import psutil
 
 from . import config, launcher
-from .models import Run, Snapshot, iso, utcnow
+from .models import Run, Snapshot
 from .runners import detached
 from .store import Store
 

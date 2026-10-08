@@ -40,7 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 
 from . import config, notify
 from .store import Store

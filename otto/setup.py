@@ -88,8 +88,7 @@ def pin_integrations(store: Store) -> bool:
     from .runners import external
     names = external.probe_names()
     settings.write({"OTTO_INTEGRATIONS": ",".join(names)}, config.SETTINGS_PATH)
-    config.INTEGRATIONS = tuple(names)
-    config.INTEGRATIONS_SET = True
+    config.reload()
     store.log(f"setup: pinned OTTO_INTEGRATIONS={','.join(names)} for a pre-setting install "
               "(unset now means no probes); edit otto.env to trim it", source="setup")
     return True
@@ -101,8 +100,9 @@ def skipped(store: Store) -> dict[str, str]:
 
 
 def restart_needed(store: Store) -> bool:
-    """True once a settings write happened in this daemon's lifetime and no
-    restart followed. Recorded against the daemon pid so a restart clears it by
+    """True once a write touched a key in config.RESTART_KEYS in this daemon's
+    lifetime and no restart followed. Every other key applies on the reload the
+    write runs. Recorded against the daemon pid so a restart clears it by
     construction: the new daemon has a new pid."""
     data = store.setup()
     return bool(data.get("restart_pid")) and data.get("restart_pid") == os.getpid()
@@ -158,9 +158,11 @@ def validate_identity(values: dict[str, Any]) -> dict[str, str | None]:
 
 
 def write_settings(store: Store, values: dict[str, str | None]) -> dict[str, Any]:
-    """Validate against .env.example when it is present, write, and flag the
-    restart. Secrets masked by describe() must not round-trip: a masked value
-    coming back from a form means "unchanged", not "set it to asterisks"."""
+    """Validate against .env.example when it is present, write, reload config so
+    the running daemon reads the new values, and flag a restart only for keys
+    that are bound when the daemon is built (config.RESTART_KEYS). Secrets masked
+    by describe() must not round-trip: a masked value coming back from a form
+    means "unchanged", not "set it to asterisks"."""
     known = settings.known_keys()
     clean: dict[str, str | None] = {}
     for key, value in values.items():
@@ -172,12 +174,21 @@ def write_settings(store: Store, values: dict[str, str | None]) -> dict[str, Any
             continue
         clean[key] = None if value is None else str(value)
     written, removed = settings.write(clean, config.SETTINGS_PATH)
-    if written or removed:
-        _mark_restart(store)
+    touched = written + removed
+    restart = sorted(k for k in touched if k in config.RESTART_KEYS)
+    live = sorted(k for k in touched if k not in config.RESTART_KEYS)
+    if touched:
+        config.reload()
+        if restart:
+            _mark_restart(store)
         store.log(f"setup: wrote {', '.join(written) or 'nothing'}"
                   + (f", removed {', '.join(removed)}" if removed else "")
-                  + f" to {config.SETTINGS_PATH.name}; restart to apply", source="setup")
-    return {"written": written, "removed": removed, "restart_needed": True}
+                  + f" to {config.SETTINGS_PATH.name}; "
+                  + (f"applied {', '.join(live)}; " if live else "")
+                  + (f"{', '.join(restart)} at the next start" if restart else "nothing waits on a restart"),
+                  source="setup")
+    return {"written": written, "removed": removed, "live": live, "restart": restart,
+            "restart_needed": bool(restart)}
 
 
 def skip(store: Store, step: str, undo: bool = False) -> None:

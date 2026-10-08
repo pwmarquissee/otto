@@ -10,7 +10,6 @@ identity, and the board takes only so many new agent cards a day.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 
 import pytest
 

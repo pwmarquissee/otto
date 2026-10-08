@@ -13,10 +13,13 @@ Code's own reporting or is omitted.
 from __future__ import annotations
 
 from . import config
-from .config import PERSONA_NAME
 from .models import Run
 
-TAG = f"[{PERSONA_NAME}]"
+
+def tag() -> str:
+    """The persona's prefix on a one-line summary, read when it is built so a
+    renamed persona follows without a restart."""
+    return f"[{config.PERSONA_NAME}]"
 
 # ---------------------------------------------------------------------------
 # The character brief. Not decoration: several of these lines are the reason
@@ -127,13 +130,13 @@ def headline(alerts: int, work: int | None = None, personal: int | None = None) 
     single total, because the two are acted on at completely different times.
     """
     if alerts == 0:
-        return f"{TAG} all clear"
+        return f"{tag()} all clear"
     noun = "item" if alerts == 1 else "items"
     if work is not None and personal is not None and work and personal:
-        return f"{TAG} {alerts} {noun} need you ({work} work, {personal} personal)"
+        return f"{tag()} {alerts} {noun} need you ({work} work, {personal} personal)"
     if personal and not work:
-        return f"{TAG} {alerts} personal {noun} need you"
-    return f"{TAG} {alerts} {noun} need you"
+        return f"{tag()} {alerts} personal {noun} need you"
+    return f"{tag()} {alerts} {noun} need you"
 
 
 def run_line(run: Run) -> str:
@@ -142,7 +145,7 @@ def run_line(run: Run) -> str:
 
 def slack_summary(title: str, lines: list[str], run: Run | None = None) -> str:
     """The consolidated post format used for /daily-style summaries."""
-    body = [f"{TAG}  {title}"]
+    body = [f"{tag()}  {title}"]
     body += [f"   {line}" for line in lines]
     if run is not None:
         body += ["   ---", f"   {sign(run)}"]
@@ -151,4 +154,4 @@ def slack_summary(title: str, lines: list[str], run: Run | None = None) -> str:
 
 def alert_block(level: str, source: str, message: str) -> str:
     mark = {"crit": "CRIT", "warn": "WARN", "info": "INFO"}.get(level, "INFO")
-    return f"{TAG} {mark}  {source}: {message}"
+    return f"{tag()} {mark}  {source}: {message}"

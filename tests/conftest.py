@@ -2,12 +2,13 @@
 
 READ THE ENV BLOCK BELOW BEFORE ADDING A TEST.
 
-otto.config resolves OTTO_HOME, STATE_DIR and friends into module-level
-constants AT IMPORT TIME. Setting OTTO_HOME from inside a test is therefore too
-late: config has already been imported and is still pointing at
-~/.claude/otto. So the environment is set here, at the top of conftest, before
-the first `import otto` anywhere in the run. pytest loads conftest before any
-test module, which is the only reason this ordering holds.
+otto.config can be re-resolved after import (config.reload, the `settings`
+fixture below), but other modules still bind values from it when THEY import:
+the daemon builds its Store from STATE_DIR, people.py its directory from
+OTTO_HOME. A reload does not rebuild those. So the sandbox is set here, at the
+top of conftest, before the first `import otto` anywhere in the run. pytest
+loads conftest before any test module, which is the only reason this ordering
+holds.
 
 Belt and braces on top of that: `Store` takes an explicit state_dir and the
 fixtures below always pass one. The env var is what protects a test that forgets.
@@ -56,6 +57,37 @@ def test_sandbox_is_active():
     assert config.STATE_DIR == _SANDBOX / "state"
     assert str(Path.home()) not in str(config.STATE_DIR.resolve())
     assert config.TOASTS_ENABLED is False
+
+
+@pytest.fixture(autouse=True)
+def _settle_config():
+    """A test that reloads config (directly, or through setup.write_settings)
+    leaves the module on whatever it last resolved, possibly from that test's own
+    otto.env. Autouse fixtures tear down last, after monkeypatch has restored the
+    environment and any pinned attribute, so this resolves once more from the
+    suite's own environment and file. Costs nothing for a test that did not reload."""
+    before = config._RELOADS
+    yield
+    if config._RELOADS != before:
+        from otto import settings as settings_mod
+        config.reload(path=settings_mod.default_path())
+
+
+@pytest.fixture
+def settings(monkeypatch):
+    """Change settings after import: `settings(OTTO_TICK="5")` sets the variables
+    through monkeypatch (None removes one) and reloads config, so the module
+    globals every reader uses carry the new values. Teardown is the autouse
+    fixture above. Values other modules bound at import (see the docstring at the
+    top) are not changed by this; pin those with monkeypatch.setattr."""
+    def _apply(**values):
+        for key, value in values.items():
+            if value is None:
+                monkeypatch.delenv(key, raising=False)
+            else:
+                monkeypatch.setenv(key, str(value))
+        return config.reload()
+    return _apply
 
 
 @pytest.fixture

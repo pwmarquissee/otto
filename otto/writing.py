@@ -34,7 +34,6 @@ nothing to fetch, and an empty MCP config is what makes the session cheap.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import subprocess
 import uuid

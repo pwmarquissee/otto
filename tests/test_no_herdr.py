@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from otto import config, herdr, setup
+from otto import config, herdr
 from otto import daemon as daemon_mod
 from otto.store import Store
 

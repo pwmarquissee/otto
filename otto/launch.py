@@ -18,7 +18,6 @@ skip-permissions needs.
 
 from __future__ import annotations
 
-import shlex
 import subprocess
 import uuid
 from datetime import datetime, timezone
@@ -142,7 +141,7 @@ def launch(store: Store, sched: Schedule, autorun: bool = False) -> tuple[Run, s
         # than replacing them: both are system-level context and a producer needs
         # both. None when there is no usable watermark, which leaves the command's
         # own documented window in charge.
-        extra = findings.INSTRUCTIONS
+        extra = findings.instructions()
         feed_name = config.SWEEP_FEED_COMMANDS.get(cmd_name)
         if feed_name:
             hint = feeds.coverage_hint(store, feed_name)

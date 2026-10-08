@@ -23,7 +23,6 @@ through Claude Code's JSON output, so Otto does not need the task to self-report
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 
 from . import config, findings
 from .models import Run, Task, iso, utcnow
@@ -271,7 +270,7 @@ def dispatch(store: Store, task: Task, force: bool = False) -> tuple[Run | None,
             skip_permissions=True,
             domain=task.domain,
             budget_usd=budget_usd,
-            system_extra=findings.INSTRUCTIONS,
+            system_extra=findings.instructions(),
             model=model,
         )
     except (ValueError, OSError) as e:

@@ -40,7 +40,7 @@ import sys
 import time
 
 from . import config
-from .models import Event, Run, utcnow
+from .models import Event, Run
 from .runners import detached
 from .store import Store
 

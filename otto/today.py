@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import re
 import textwrap
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timezone
 from typing import Any, NamedTuple
 
 from . import config
@@ -331,7 +331,17 @@ def render(snaps: dict[str, Any], domain: str | None = None,
     return lines
 
 
-_BLOCK_RE = [re.compile(p, re.I) for p in config.CALENDAR_BLOCKS]
+_block_cache: tuple[tuple[str, ...], list[re.Pattern[str]]] | None = None
+
+
+def _block_res() -> list[re.Pattern[str]]:
+    """config.CALENDAR_BLOCKS compiled, once per value: a reload with a changed
+    list recompiles, an unchanged one costs a tuple compare."""
+    global _block_cache
+    blocks = tuple(config.CALENDAR_BLOCKS)
+    if _block_cache is None or _block_cache[0] != blocks:
+        _block_cache = (blocks, [re.compile(p, re.I) for p in blocks])
+    return _block_cache[1]
 
 
 def is_block(event: Event | str) -> bool:
@@ -341,7 +351,7 @@ def is_block(event: Event | str) -> bool:
     point is not to hide them, it is that nothing should INTERRUPT for one.
     """
     title = event if isinstance(event, str) else event.title
-    return any(r.search(title or "") for r in _BLOCK_RE)
+    return any(r.search(title or "") for r in _block_res())
 
 
 def next_event(snaps: dict[str, Any], now: datetime | None = None,

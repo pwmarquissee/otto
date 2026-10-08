@@ -304,6 +304,23 @@
 <script src="/static/vendor/addon-fit.js"></script>
 <script src="/static/vendor/addon-webgl.js"></script>
 <script src="/static/term.js"></script>
-<script src="/static/app.js"></script>
+<!-- The dashboard, as ordered classic scripts; the load-order contract is the
+     header of js/00-shell.js. Names are numbered so the order reads off a listing. -->
+<script src="/static/js/00-shell.js"></script>
+<script src="/static/js/10-helpers.js"></script>
+<script src="/static/js/20-rail-topbar.js"></script>
+<script src="/static/js/30-today.js"></script>
+<script src="/static/js/35-board.js"></script>
+<script src="/static/js/40-history.js"></script>
+<script src="/static/js/45-control-plane.js"></script>
+<script src="/static/js/50-detail.js"></script>
+<script src="/static/js/55-writing.js"></script>
+<script src="/static/js/60-actions.js"></script>
+<script src="/static/js/65-overlays-render.js"></script>
+<script src="/static/js/70-dispatch.js"></script>
+<script src="/static/js/75-terminal.js"></script>
+<script src="/static/js/80-setup.js"></script>
+<script src="/static/js/85-poll.js"></script>
+<script src="/static/js/90-wiring.js"></script>
 </body>
 </html>

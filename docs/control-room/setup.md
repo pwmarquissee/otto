@@ -20,9 +20,15 @@ daemon is never overridden by the file. The dashboard and `otto setup` write the
 Nothing else does. Only keys matching `^OTTO_[A-Z0-9_]+$` are read from it, so it
 cannot set PATH or anything that is not Otto's.
 
-Config is import-time, so a changed file takes effect at the next daemon start. Every
-write through the API reports `restart_needed: true`, the Setup view shows a banner
-with a Restart button, and `otto setup` offers the same at the end.
+A write reloads config in the running daemon (`config.reload()`), so everything read
+at call time takes effect at once. The keys bound when the daemon is built, listed
+in `config.RESTART_KEYS` (OTTO_HOME, OTTO_HOST, OTTO_PORT, OTTO_URL, the allowed
+origins and hosts, OTTO_SCOPE, OTTO_TICK), take effect at the next start: a write
+touching one of those reports `restart_needed: true`, the Setup view shows a banner
+with a Restart button, and `otto setup` offers the same at the end. A reload drops
+what the previous apply put into the environment before applying the file again, so
+a removed or changed file value lands; a key the environment itself sets is never
+touched.
 
 ## The steps
 
@@ -38,7 +44,7 @@ with a Restart button, and `otto setup` offers the same at the end.
 | `finish` | | `completed_at` is set | button: finish |
 
 Statuses: `done`, `todo`, `skipped`, `restart` (the file has the value, the running
-daemon does not yet). Required steps can also be skipped. The flow never blocks, it
+daemon does not yet: a RESTART_KEYS key, or a value the environment pins). Required steps can also be skipped. The flow never blocks, it
 only records. While setup is incomplete, unconfigured-integration cards and alerts are
 suppressed on the board and in Today. That information is in the Setup view.
 
@@ -60,7 +66,7 @@ GET  /api/setup
     "choice"  with "options": [{"value","label","hint","checked"}], "multi": true
     "none"
 
-POST /api/setup/settings      {"values": {KEY: value|null}}   -> {"written": [KEY], "removed": [KEY], "restart_needed": true}
+POST /api/setup/settings      {"values": {KEY: value|null}}   -> {"written": [KEY], "removed": [KEY], "live": [KEY], "restart": [KEY], "restart_needed": bool}
                               null removes a key; keys must be OTTO_* and, if .env.example is present, known there
 POST /api/setup/hooks/install                                  -> {"changed": bool, "message": str}
 POST /api/setup/herdr/up                                       -> {"ok": bool, "message": str}

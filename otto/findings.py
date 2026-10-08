@@ -35,8 +35,10 @@ BLOCK = re.compile(r"<<<OTTO\s*(.*?)\s*OTTO>>>", re.DOTALL)
 
 VALID_PRIORITY = {"low", "normal", "high", "urgent"}
 
-# The convention, appended to the system prompt of every Otto-spawned run.
-INSTRUCTIONS = """
+# The convention, appended to the system prompt of every Otto-spawned run. A
+# template: instructions() fills the owner and the cap in at spawn time, so a
+# reload of OTTO_OWNER_NAME or OTTO_FINDINGS_MAX reaches the next run.
+_INSTRUCTIONS = """
 ## Filing findings back to Otto
 
 You are running under Otto, who maintains the floors so %(owner)s can raise the ceilings.
@@ -85,7 +87,13 @@ the secrets store. Do not attempt them and do not look for another route.
 If the task needs a message sent, leave a Slack draft or put the exact text and
 recipient in your final paragraph; if it needs a credential, say which secret and
 why. The attended half is for %(owner)s to run.
-""" % {"owner": config.OWNER_NAME, "max": config.FINDINGS_MAX_PER_RUN}
+"""
+
+
+def instructions() -> str:
+    """The filing convention with the owner's name and the per-run cap filled in,
+    read when a run is spawned so a reload reaches the next one."""
+    return _INSTRUCTIONS % {"owner": config.OWNER_NAME, "max": config.FINDINGS_MAX_PER_RUN}
 
 
 # The fingerprint lives in dedupe.py now, next to the two looser tiers of

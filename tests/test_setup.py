@@ -130,15 +130,23 @@ def _disarmed_seeds():
 
 @pytest.fixture
 def fresh(tmp_path, daemon, monkeypatch):
-    """An empty store and an unwritten settings file: a brand-new install."""
+    """An empty store and an unwritten settings file: a brand-new install.
+
+    The fresh-install position is pinned through the resolver's own defaults and
+    a reload, not by overwriting the resolved values: setup.write_settings
+    reloads config, and a value pinned by assignment would not survive that.
+    The settings file is this test's own; a no-argument reload keeps reading it."""
     store = Store(tmp_path / "state")
-    monkeypatch.setattr(config, "SETTINGS_PATH", tmp_path / "otto.env")
-    monkeypatch.setattr(config, "OWNER_NAME", setup.DEFAULT_OWNER)
-    monkeypatch.setattr(config, "ORG_NAME", setup.DEFAULT_ORG)
-    monkeypatch.setattr(config, "WORK_ROOTS", ())
-    monkeypatch.setattr(config, "PERSONAL_ROOTS", ())
-    monkeypatch.setattr(config, "INTEGRATIONS", ())
-    monkeypatch.setattr(config, "INTEGRATIONS_SET", False)
+    monkeypatch.setattr(config, "_DEFAULT_OWNER_NAME", setup.DEFAULT_OWNER)
+    monkeypatch.setattr(config, "_DEFAULT_ORG_NAME", setup.DEFAULT_ORG)
+    monkeypatch.setattr(config, "_DEFAULT_WORK_ROOTS", ())
+    monkeypatch.setattr(config, "_DEFAULT_PERSONAL_ROOTS", ())
+    for key in ("OTTO_OWNER_NAME", "OTTO_ORG_NAME", "OTTO_WORK_ROOTS", "OTTO_PERSONAL_ROOTS",
+                "OTTO_INTEGRATIONS"):
+        monkeypatch.delenv(key, raising=False)
+    config.reload(path=tmp_path / "otto.env")
+    assert config.OWNER_NAME == setup.DEFAULT_OWNER and config.WORK_ROOTS == ()
+    assert config.INTEGRATIONS == () and config.INTEGRATIONS_SET is False
     # A machine with herdr installed and running would make that step "done" and
     # hide what the skip tests check. A fresh install has neither.
     from otto import herdr
@@ -180,18 +188,36 @@ def test_identity_validation_rejects_missing_roots(tmp_path):
     assert good["OTTO_WORK_ROOTS"] == os.pathsep.join([str(tmp_path), str(tmp_path)])
 
 
-def test_write_settings_flags_restart_and_skips_masked_values(fresh):
+def test_write_settings_applies_live_and_skips_masked_values(fresh):
+    """A write reloads config, so a key read at call time is live at once and the
+    step reads done, not restart. (It used to flag every write for a restart,
+    because config was import-time.)"""
     out = setup.write_settings(fresh, {"OTTO_OWNER_NAME": "Alex", "OTTO_SLACK_BOT_TOKEN": settings.MASK})
     assert out["written"] == ["OTTO_OWNER_NAME"]
+    assert out["live"] == ["OTTO_OWNER_NAME"] and out["restart"] == []
+    assert out["restart_needed"] is False
+    assert setup.restart_needed(fresh) is False
+    assert config.OWNER_NAME == "Alex"
+    assert "OTTO_SLACK_BOT_TOKEN" not in settings.read(config.SETTINGS_PATH)
+    by = {s["id"]: s for s in setup.steps(fresh)}
+    assert by["identity"]["status"] == "todo"  # roots still missing
+    setup.write_settings(fresh, {"OTTO_WORK_ROOTS": str(config.SETTINGS_PATH.parent)})
+    assert config.WORK_ROOTS == (config.SETTINGS_PATH.parent,)
+    by = {s["id"]: s for s in setup.steps(fresh)}
+    assert by["identity"]["status"] == "done"
+
+
+def test_write_settings_flags_restart_only_for_bound_keys(fresh, monkeypatch):
+    """The tick period is bound when the daemon imports; writing it reloads config
+    like anything else but reports the restart, and the flag sticks for this pid.
+    (Not the port: conftest pins OTTO_PORT in the environment, which beats the file.)"""
+    monkeypatch.delenv("OTTO_TICK", raising=False)
+    out = setup.write_settings(fresh, {"OTTO_TICK": "9", "OTTO_OWNER_NAME": "Alex"})
+    assert out["restart"] == ["OTTO_TICK"] and out["live"] == ["OTTO_OWNER_NAME"]
     assert out["restart_needed"] is True
     assert setup.restart_needed(fresh) is True
-    assert "OTTO_SLACK_BOT_TOKEN" not in settings.read(config.SETTINGS_PATH)
-    # The file now has an identity but the running config does not: "restart".
-    by = {s["id"]: s for s in setup.steps(fresh)}
-    assert by["identity"]["status"] == "todo"  # roots still missing in the file
-    setup.write_settings(fresh, {"OTTO_WORK_ROOTS": str(config.SETTINGS_PATH.parent)})
-    by = {s["id"]: s for s in setup.steps(fresh)}
-    assert by["identity"]["status"] == "restart"
+    assert config.TICK_SECONDS == 9, "resolved too; the objects built from the old value are what wait"
+    assert setup.view(fresh)["restart_needed"] is True
 
 
 def test_write_settings_rejects_unknown_keys(fresh):
@@ -330,12 +356,13 @@ def test_settings_route_validates_and_writes(api, tmp_path):
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body["written"]) == {"OTTO_OWNER_NAME", "OTTO_WORK_ROOTS", "OTTO_INTEGRATIONS"}
-    assert body["restart_needed"] is True
+    assert body["restart_needed"] is False, "none of these is bound at daemon build"
+    assert config.INTEGRATIONS == ("aws", "notion"), "live in the process that wrote it"
     filed = settings.read(config.SETTINGS_PATH)
     assert filed["OTTO_INTEGRATIONS"] == "aws,notion"
     assert filed["OTTO_WORK_ROOTS"] == str(tmp_path)
     v = api.get("/api/setup").json()
-    assert v["restart_needed"] is True
+    assert v["restart_needed"] is False
     assert v["settings"]["exists"] is True
     r = api.post("/api/setup/settings", json={"values": {"OTTO_INTEGRATIONS": "none"}})
     assert settings.read(config.SETTINGS_PATH)["OTTO_INTEGRATIONS"] == "none"

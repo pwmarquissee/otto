@@ -1,10 +1,10 @@
 """The one configuration file Otto writes: <OTTO_HOME>/otto.env.
 
-config.py reads every OTTO_* value from the environment at import time, and that
-stays the contract. This module exists so a person can configure Otto from the
-dashboard or from `otto setup` without editing a shell profile or a service
-definition: the values land here, and config.py pulls them into the environment
-before it resolves anything (settings.apply, called at the top of config.py).
+config.py resolves every OTTO_* value from the environment (config.resolve, run
+at import and again on config.reload). This module exists so a person can
+configure Otto from the dashboard or from `otto setup` without editing a shell
+profile or a service definition: the values land here, and resolve() pulls them
+into the environment before it computes anything (settings.apply).
 
 Precedence is environment, then this file, then the default in config.py. The
 environment wins so a test harness, a scratch daemon, or a deployment that pins a
@@ -13,7 +13,11 @@ value is never overridden by a file it did not write. Only keys matching
 is written by the daemon on loopback requests, and even so it must not be able to
 set PATH or anything that is not Otto's.
 
-A changed file takes effect at the next daemon start. Callers that write report
+A changed file takes effect on the next config.reload(), which setup.write_settings
+runs right after writing: apply() remembers which keys it put into the environment
+and drops them before applying again, so a changed or removed file value lands
+and a key the environment itself sets is never touched. Keys in config.RESTART_KEYS
+are bound when the daemon is built; a write to one of those reports
 restart_needed, and the setup flow carries the restart.
 
 No otto imports here. config.py imports this module, so importing config back
@@ -25,6 +29,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 FILE_NAME = "otto.env"
@@ -38,11 +43,11 @@ SECTION_HEADER = "# ---- set by otto setup -------------------------------------
 _LINE_RE = re.compile(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$")
 
 
-def default_path() -> Path:
+def default_path(environ: Mapping[str, str] | None = None) -> Path:
     """Where the file lives. Mirrors config's OTTO_HOME resolution without
     importing config: OTTO_HOME is the one value that can only come from the
     environment, since it says where this file is."""
-    home = os.environ.get("OTTO_HOME")
+    home = (os.environ if environ is None else environ).get("OTTO_HOME")
     base = Path(home) if home else Path.home() / ".claude" / "otto"
     return base / FILE_NAME
 
@@ -99,14 +104,34 @@ def read(path: Path | None = None) -> dict[str, str]:
         return {}
 
 
+# What apply() last put into os.environ, key -> value, so the next apply can take
+# it back out. Only a value still equal to what we set is removed: a key the
+# process changed by hand since then is its own, not ours.
+_APPLIED: dict[str, str] = {}
+
+
+def unapply() -> list[str]:
+    """Remove from os.environ what the last apply() put there. Returns the keys."""
+    dropped: list[str] = []
+    for key, value in list(_APPLIED.items()):
+        if os.environ.get(key) == value:
+            del os.environ[key]
+            dropped.append(key)
+    _APPLIED.clear()
+    return dropped
+
+
 def apply(path: Path | None = None) -> list[str]:
     """Pull the file into os.environ for every key the environment does not
-    already set. Returns the keys applied, for the daemon log."""
+    already set, after taking back what the previous apply() set, so a reload
+    sees the file as it is now. Returns the keys applied, for the daemon log."""
+    unapply()
     applied: list[str] = []
     for key, value in read(path).items():
         if key in os.environ:
             continue
         os.environ[key] = value
+        _APPLIED[key] = value
         applied.append(key)
     return applied
 
