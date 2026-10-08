@@ -193,7 +193,9 @@ def _dispatch(store: Store, channel: str, messages: list[dict]) -> str:
             prompt="/otto-dm",
             cwd=str(config.HOME),
             mode="headless",
-            skip_permissions=True,
+            # yolo: a DM is an instruction to act (file, move, look things up and
+            # answer); plan mode could only read. The guard hook still applies.
+            permissions="yolo",
             domain=config.WORK,
             system_extra=extra,
             budget_usd=config.DM_BUDGET_USD or None,

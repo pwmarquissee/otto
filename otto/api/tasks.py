@@ -15,7 +15,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from .. import board, config, dedupe, dispatch, findings, known, notify, persona
+from .. import backlog, board, config, dedupe, dispatch, findings, known, notify, persona
 from .. import daemon as _d
 from ..models import Task, iso, utcnow
 from ..runners import detached
@@ -89,6 +89,8 @@ class TaskPatch(BaseModel):
     # as one) is recorded the way the sweep records it: closed INTO a keeper, not
     # counted as finished work. Pass "" to clear, same convention as last_error.
     duplicate_of: str | None = None
+    # plan | yolo, or "" to go back to deriving it (models.Task.permissions).
+    permissions: str | None = None
 
 class ProposeRequest(BaseModel):
     """A running agent filing work it noticed.
@@ -130,15 +132,63 @@ def get_task(task_id: str) -> dict[str, Any]:
     return body
 
 @router.post("/api/tasks/{task_id}/dispatch")
-def dispatch_task(task_id: str, force: bool = False) -> dict[str, Any]:
+def dispatch_task(task_id: str, force: bool = False,
+                  permissions: str | None = None) -> dict[str, Any]:
+    """Run a card now. `permissions=plan|yolo` overrides the derived level for
+    this one run; omitted means dispatch.permissions_for(task)."""
+    if permissions is not None and permissions not in ("plan", "yolo"):
+        raise HTTPException(400, "permissions must be plan or yolo")
     task = _d.store.get_task(task_id)
     if task is None:
         raise HTTPException(404, f"no task matching {task_id}")
-    run, msg = dispatch.dispatch(_d.store, task, force=force)
+    run, msg = dispatch.dispatch(_d.store, task, force=force, permissions=permissions)
     if run is None:
         raise HTTPException(409, msg)
     _d.store.log(msg, source="dispatch", task_id=task.id, run_id=run.id)
     return {"message": msg, "run": run.model_dump()}
+
+@router.post("/api/tasks/{task_id}/yolo")
+def yolo_task(task_id: str) -> dict[str, Any]:
+    """The one-word approval: `otto task yolo <id>`, or "yolo" typed on a card.
+
+    Approves the plan the card holds (a PREPARE run's proposal, or one the owner
+    wrote), pins the level to yolo, and sends the card through the same gate
+    `otto triage promote` uses, then dispatches it now. The plan gate is what the
+    word answers; a tier or owner refusal still stands and comes back as the
+    gate's own sentence, because "yolo" on a card Otto may not run is still no.
+    A card already queued or in needs-you after a prepare run is treated as
+    backlog for the gate: it is the same card, one step further along.
+    """
+    with _d.store.lock:
+        task = _d.store.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, f"no task matching {task_id}")
+        if task.status == "running":
+            raise HTTPException(409, f"already running as {persona.short(task.run_id or '')}")
+        probe = task.model_copy(update={
+            "status": "backlog" if task.status in ("needs-you", "queued") else task.status,
+            "plan_approved": task.plan_approved or (iso(utcnow()) if task.plan else None),
+        })
+        why = backlog.refusal(probe, _d.store.tasks())
+        if why:
+            raise HTTPException(409, why)
+        task.plan_approved = probe.plan_approved
+        task.permissions = "yolo"
+        task.run_mode = "run"
+        task.status = "queued"
+        task.auto = True
+        task.touch()
+        _d.store.upsert_task(task)
+    run, msg = dispatch.dispatch(_d.store, task, force=True, permissions="yolo")
+    if run is None:
+        # Queued and approved, so the next tick or `otto task run` picks it up; say
+        # why it did not go this instant rather than failing the approval.
+        _d.store.log(f"yolo on {task.title[:50]}: approved, not dispatched ({msg})",
+                     source="board", task_id=task.id)
+        return {"task": _d.store.get_task(task.id).model_dump(), "run": None, "message": msg}
+    _d.store.log(f"yolo: {msg}", source="dispatch", task_id=task.id, run_id=run.id)
+    return {"task": _d.store.get_task(task.id).model_dump(), "run": run.model_dump(),
+            "message": msg}
 
 class NoticeRequest(BaseModel):
     title: str
@@ -272,7 +322,7 @@ def update_task(task_id: str, req: TaskPatch) -> dict[str, Any]:
         # "" means clear for the optional strings a human re-sets: an empty plan
         # approval is "not approved", not an approval stamped "".
         for k in ("plan_approved", "next_look", "last_checked", "run_mode", "run_id",
-                  "plan", "last_error", "duplicate_of"):
+                  "plan", "last_error", "duplicate_of", "permissions"):
             if changes.get(k) == "":
                 changes[k] = None
         try:
@@ -410,7 +460,9 @@ def reply_task(task_id: str, req: CardReplyRequest) -> dict[str, Any]:
             prompt="/otto-card",
             cwd=str(config.HOME),
             mode="headless",
-            skip_permissions=True,
+            # yolo: it moves cards and files new ones on the owner's word, which plan
+            # mode cannot do; the guard hook still gates what it may reach.
+            permissions="yolo",
             domain=task.domain,
             task_id=task.id,
             system_extra=extra,

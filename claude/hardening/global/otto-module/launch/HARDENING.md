@@ -9,9 +9,10 @@ other tier-1 definitions under skip-permissions.
 A schedule's `command` is one of two very different things and `launch` tells them
 apart:
 
-- **slash command** (`/orchestrate`), spawned as a headless Claude Code session with
-  `skip_permissions=True`, cwd `~`, `findings.INSTRUCTIONS` appended. Full operator
-  credentials. A daily chain command inherits every definition it chains.
+- **slash command** (`/orchestrate`), spawned as a headless Claude Code session at the
+  schedule's own level (`permissions=sched.permissions`, yolo unless `otto schedule
+  set <name> --permissions plan`), cwd `~`, `findings.instructions()` appended. Full
+  operator credentials at yolo. A daily chain command inherits every definition it chains.
 - **shell command**, run directly with output captured to `LOG_DIR`.
 
 Getting the discrimination wrong is the difference between a working button and one

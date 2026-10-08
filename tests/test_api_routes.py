@@ -56,6 +56,7 @@ CORE = {
     ("POST", "/api/slack/reply"), ("POST", "/api/slack/tell"), ("POST", "/api/tasks"),
     ("POST", "/api/tasks/batch"), ("POST", "/api/tasks/dedupe"), ("POST", "/api/tasks/propose"),
     ("POST", "/api/tasks/{task_id}/dispatch"), ("POST", "/api/tasks/{task_id}/reply"),
+    ("POST", "/api/tasks/{task_id}/yolo"),
     ("POST", "/v1/logs"), ("POST", "/v1/metrics"), ("POST", "/v1/traces"),
     ("PUT", "/api/known/{kind}/{name}"), ("PUT", "/api/schedules/{name}"),
     ("PUT", "/api/snapshots/{kind}"),

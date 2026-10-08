@@ -278,9 +278,15 @@ class Client:
     def task(self, task_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/tasks/{task_id}")
 
-    def dispatch_task(self, task_id: str, force: bool = False) -> dict[str, Any]:
-        return self._request("POST", f"/api/tasks/{task_id}/dispatch",
-                             params={"force": str(force).lower()})
+    def dispatch_task(self, task_id: str, force: bool = False,
+                      permissions: str | None = None) -> dict[str, Any]:
+        params: dict[str, str] = {"force": str(force).lower()}
+        if permissions:
+            params["permissions"] = permissions
+        return self._request("POST", f"/api/tasks/{task_id}/dispatch", params=params)
+
+    def yolo_task(self, task_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/api/tasks/{task_id}/yolo")
 
     def dispatch_status(self) -> dict[str, Any]:
         return self._request("GET", "/api/dispatch")

@@ -101,6 +101,12 @@ class Run(BaseModel):
     task_id: str | None = None  # the external queue's own id, when driven by one
     tier: str | None = None
     notes: str | None = None
+    # What the session may do, as the flags it was started with (runners/detached):
+    #   plan     --permission-mode plan: read-only investigation that writes a plan
+    #   yolo     --dangerously-skip-permissions: the full operator, unattended
+    #   scoped   an allow or deny list instead of either (outreach, writing, refresh)
+    # Defaults to yolo because every run before the field existed was one.
+    permissions: Literal["plan", "yolo", "scoped"] = "yolo"
 
     # WHY a failed run failed, when that is knowable and load-bearing. Today the only
     # value is "api": Claude Code reported `terminal_reason: api_error`, meaning the
@@ -313,6 +319,9 @@ class Schedule(BaseModel):
     #   writing  the built-in post-ideas miner. Reads Otto's own state, no tools
     runner: Literal["report", "refresh", "ingest", "launch", "writing"] = "report"
     description: str | None = None
+    # The level a `launch` run gets (models.Run.permissions). yolo by default: the
+    # seeded loops gather data and act on the board, which plan mode cannot do.
+    permissions: Literal["plan", "yolo"] = "yolo"
 
     created: str = Field(default_factory=lambda: iso(utcnow()))
     last_run: str | None = None
@@ -432,6 +441,10 @@ class Task(BaseModel):
     plan: str | None = None
     plan_approved: str | None = None       # when the owner approved it
     run_mode: Literal["run", "prepare"] | None = None
+    # The level the next run gets, when the owner pinned one (`otto task set --permissions`,
+    # `otto task yolo`). None derives it: a prepare run is `plan`, anything else `yolo`
+    # (dispatch.permissions_for). Elevating is one word; nothing elevates on its own.
+    permissions: Literal["plan", "yolo"] | None = None
     # ---- stale loop ----
     # Re-verification used to key off `created`, so a card checked yesterday was
     # "stale" again today and got another essay appended. Age now counts from the

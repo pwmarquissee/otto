@@ -34,6 +34,8 @@ class ScheduleRequest(BaseModel):
     # was before this existed.
     runner: Literal["report", "refresh", "ingest", "launch", "writing"] = "report"
     description: str | None = None
+    # The level a launch run gets; see models.Schedule.permissions.
+    permissions: Literal["plan", "yolo"] = "yolo"
     enabled: bool = True
     autostart: bool = False
     max_age_hours: int | None = None
@@ -81,7 +83,7 @@ def put_schedule(name: str, req: ScheduleRequest) -> dict[str, Any]:
         sched = Schedule(
             name=name, command=req.command, domain=req.domain,  # type: ignore[arg-type]
             cadence=cadence, enabled=req.enabled, autostart=req.autostart,
-            runner=req.runner,
+            runner=req.runner, permissions=req.permissions,
             description=req.description, max_age_hours=req.max_age_hours,
         )
     except ValueError as e:

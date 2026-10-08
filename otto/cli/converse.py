@@ -90,7 +90,8 @@ def cmd_refresh(args, client: Client) -> int:
         # half the job reads as a success.
         print(_c(f"  skipped {s['domain']}: {s['reason']}", C_YEL))
     for r in runs:
-        print(f"  refreshing {r['domain']} (run {persona.short(r['id'])}, pid {r['pid']})")
+        how = f"pid {r['pid']}" if r.get('pid') else "direct connector"
+        print(f"  refreshing {r['domain']} (run {persona.short(r['id'])}, {how})")
 
     if args.no_wait:
         print("  check back with: otto agenda")
@@ -136,7 +137,7 @@ def add_chat(sub) -> None:
 
 
 def add_refresh(sub) -> None:
-    s = sub.add_parser("refresh", help="pull calendar + mail via MCP, per domain")
+    s = sub.add_parser("refresh", help="pull calendar + mail, per domain (a session, or the direct connector)")
     s.add_argument("--domain", choices=config.DOMAINS,
                    help="which account to refresh (default work)")
     s.add_argument("--no-wait", action="store_true")

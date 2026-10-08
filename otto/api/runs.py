@@ -31,7 +31,12 @@ class SpawnRequest(BaseModel):
     mode: str = "headless"
     task_id: str | None = None
     tier: str | None = None
-    skip_permissions: bool = True
+    # The level (detached.LEVELS): plan, yolo or scoped. Omitted means yolo, the
+    # old behaviour. `skip_permissions` is the field this used to be; a caller still
+    # sending it gets yolo for True and plan for False, and `permissions` wins when
+    # both are present.
+    permissions: str | None = None
+    skip_permissions: bool | None = None
     domain: str | None = None  # inferred from cwd when omitted
     # Omitted means config.DEFAULT_MODEL, not "inherit whatever settings.json says".
     # detached.spawn() has taken a model since thread notes needed one, but this
@@ -140,13 +145,20 @@ def prune_runs(older_than_hours: int = 24, dry_run: bool = True) -> dict[str, An
                   "ended": r.ended or r.started} for r in doomed],
     }
 
+def _level(req: SpawnRequest) -> str:
+    if req.permissions:
+        return req.permissions
+    if req.skip_permissions is False:
+        return "plan"
+    return "yolo"
+
 @router.post("/api/runs/spawn")
 def spawn_run(req: SpawnRequest) -> dict[str, Any]:
     try:
         run = detached.spawn(
             name=req.name, prompt=req.prompt, cwd=req.cwd, agent=req.agent,
             mode=req.mode, task_id=req.task_id, tier=req.tier,
-            skip_permissions=req.skip_permissions, domain=req.domain,
+            permissions=_level(req), domain=req.domain,
             model=req.model or config.DEFAULT_MODEL or None,
             system_extra=req.system_extra,
         )

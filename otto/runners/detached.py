@@ -47,6 +47,35 @@ _NEW_CONSOLE = 0x00000010  # windowed: a real console the human can watch
 _FLAGS_HEADLESS = (_NEW_GROUP | _NO_WINDOW) if os.name == "nt" else 0
 _FLAGS_WINDOWED = (_NEW_GROUP | _NEW_CONSOLE) if os.name == "nt" else 0
 
+# Permission levels, as the flags Claude Code is started with.
+#
+#   plan    `--permission-mode plan`: reads files, runs read-only commands (measured
+#           2026-10-07: `git log` ran, Write was refused with "Plan mode is active"),
+#           and writes its findings as text. `--permission-prompts none` so a headless
+#           run never stalls on a prompt nobody can answer. What a PREPARE run gets.
+#   yolo    `--dangerously-skip-permissions`: the full operator, exactly what every
+#           unattended run was before the levels existed. Implementation and the
+#           loops that act on the board. Named so nobody mistakes it for safe.
+#   scoped  neither: the caller passes its own allow or deny list (outreach's one-tool
+#           sender, the writing miner, refresh). Those sites do not go through here.
+#
+# The level is not the guard: scripts/otto_guard.py keys off OTTO_UNATTENDED and
+# gates the same actions at every level. OTTO_RUN_PERMISSIONS is set so a session,
+# or the hook, can see which level it is under.
+LEVELS = ("plan", "yolo", "scoped")
+
+
+def permission_flags(level: str, interactive: bool = False) -> list[str]:
+    """The claude arguments for a level. `--permission-prompts` only exists under
+    `--print`, so an attended (interactive) session gets plan mode alone."""
+    if level not in LEVELS:
+        raise ValueError(f"permissions must be one of {', '.join(LEVELS)}, not {level!r}")
+    if level == "yolo":
+        return ["--dangerously-skip-permissions"]
+    if level == "plan":
+        return ["--permission-mode", "plan"] + ([] if interactive else ["--permission-prompts", "none"])
+    return []
+
 
 def _log_path(run_id: str, name: str) -> Path:
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -74,7 +103,7 @@ def _write_launcher(
     agent_md: Path | None,
     log: Path,
     mode: str,
-    skip_permissions: bool,
+    permissions: str,
     budget_usd: float | None = None,
     system_extra: str | None = None,
     model: str | None = None,
@@ -89,7 +118,7 @@ def _write_launcher(
     nothing large or quoted ever crosses a process boundary as an argument.
     otto/launcher.py renders the script for the platform.
     """
-    env: dict[str, str] = {}
+    env: dict[str, str] = {"OTTO_RUN_PERMISSIONS": permissions}
     args: list[str] = ["-p"]
     if mode != "windowed":
         # Headless means nobody is watching, and scripts/otto_guard.py keys off
@@ -134,8 +163,7 @@ def _write_launcher(
         empty = config.LOG_DIR / f"{run_id[:6]}-{name}.mcp.json"
         empty.write_text('{"mcpServers":{}}', encoding="utf-8")
         args += ["--strict-mcp-config", "--mcp-config", str(empty)]
-    if skip_permissions:
-        args.append("--dangerously-skip-permissions")
+    args += permission_flags(permissions)
     # ONE file, passed by PATH with --append-system-prompt-file, never by value.
     #
     # It used to be two --append-system-prompt arguments carrying the text itself.
@@ -177,14 +205,19 @@ def spawn(
     mode: str = "headless",
     task_id: str | None = None,
     tier: str | None = None,
-    skip_permissions: bool = True,
+    permissions: str = "yolo",
     domain: str | None = None,
     budget_usd: float | None = None,
     system_extra: str | None = None,
     model: str | None = None,
     local_mcp: bool = True,
 ) -> Run:
-    """Launch a Claude Code session and return a tracked Run."""
+    """Launch a Claude Code session and return a tracked Run.
+
+    `permissions` is one of LEVELS; every caller names it, because the level a
+    session runs at is the one decision here that is not reversible afterward.
+    """
+    permission_flags(permissions)  # validates before anything is written
     if shutil.which("claude") is None:
         raise ValueError("`claude` not found on PATH - cannot spawn a session")
 
@@ -205,7 +238,7 @@ def spawn(
         raise ValueError(f"no agent definition at ~/.claude/agents/{agent}.md")
 
     script = _write_launcher(
-        run_id, safe_name, cwd, prompt_file, agent_md, log, mode, skip_permissions,
+        run_id, safe_name, cwd, prompt_file, agent_md, log, mode, permissions,
         budget_usd, system_extra, model, local_mcp,
     )
 
@@ -223,10 +256,11 @@ def spawn(
     if wanted:
         try:
             if mode == "windowed":
-                iargs = _interactive_args(run_id, safe_name, skip_permissions, model, local_mcp)
+                iargs = _interactive_args(run_id, safe_name, permissions, model, local_mcp)
                 launched = herdrpane.launch_claude_interactive(
                     cwd, iargs, prompt, label=name,
-                    env={"OTTO_RUN_NAME": name, "OTTO_RUN_ID": run_id})
+                    env={"OTTO_RUN_NAME": name, "OTTO_RUN_ID": run_id,
+                         "OTTO_RUN_PERMISSIONS": permissions})
                 cmd = ["claude", *iargs]
                 # An interactive TUI is not a log; usage comes off the transcript,
                 # exactly as it does for a console window.
@@ -236,7 +270,7 @@ def spawn(
             else:
                 cmd = launcher.pane_command(script)
                 launched = herdrpane.launch_in_pane(
-                    cmd, cwd, log, _run_env(run_id, name, mode), label=name,
+                    cmd, cwd, log, _run_env(run_id, name, mode, permissions), label=name,
                     match=str(script))
             pid, pane_id, workspace_id = launched.pid, launched.pane_id, launched.workspace_id
             notes += " | pane"
@@ -295,6 +329,7 @@ def spawn(
         model=model,
         agent=agent,
         notes=notes,
+        permissions=permissions,  # type: ignore[arg-type]
         pane_id=pane_id,
         workspace_id=workspace_id,
     )
@@ -312,16 +347,16 @@ def _pane_wanted() -> tuple[bool, str | None]:
     return True, None
 
 
-def _run_env(run_id: str, name: str, mode: str) -> dict[str, str]:
+def _run_env(run_id: str, name: str, mode: str, permissions: str = "yolo") -> dict[str, str]:
     """The per-run variables the launcher sets, mirrored onto the pane shell so
     a human who types into that pane afterward is under the same marks."""
-    env = {"OTTO_RUN_NAME": name, "OTTO_RUN_ID": run_id}
+    env = {"OTTO_RUN_NAME": name, "OTTO_RUN_ID": run_id, "OTTO_RUN_PERMISSIONS": permissions}
     if mode != "windowed":
         env["OTTO_UNATTENDED"] = "1"
     return env
 
 
-def _interactive_args(run_id: str, safe_name: str, skip_permissions: bool,
+def _interactive_args(run_id: str, safe_name: str, permissions: str,
                       model: str | None, local_mcp: bool) -> list[str]:
     """The windowed launcher's claude arguments, minus `-p`: an attended pane
     runs a real interactive session and gets its prompt through herdr. The side
@@ -332,8 +367,7 @@ def _interactive_args(run_id: str, safe_name: str, skip_permissions: bool,
     if not local_mcp:
         args += ["--strict-mcp-config", "--mcp-config",
                  str(config.LOG_DIR / f"{run_id[:6]}-{safe_name}.mcp.json")]
-    if skip_permissions:
-        args.append("--dangerously-skip-permissions")
+    args += permission_flags(permissions, interactive=True)
     extra_file = config.LOG_DIR / f"{run_id[:6]}-{safe_name}.sysextra.txt"
     if extra_file.is_file():
         args += ["--append-system-prompt-file", str(extra_file)]

@@ -371,7 +371,8 @@ _DEFAULT_PERSONAL_ROOTS: tuple[Path, ...] = ()
 # and the helpers that read it.
 _NOT_SETTINGS = frozenset({"environ", "path", "env", "_csv_env", "_base_url_parts",
                            "_allowed_origins", "_allowed_hosts", "_csv", "_path_list",
-                           "_milestones", "_capabilities"})
+                           "_milestones", "_capabilities", "_domain", "_raw", "_kind",
+                           "_", "_alias"})
 
 
 def resolve(environ: Mapping[str, str] | None = None, path: Path | None = None) -> Settings:
@@ -1084,6 +1085,34 @@ def resolve(environ: Mapping[str, str] | None = None, path: Path | None = None) 
     # The precedent is thread notes: $0.79 a run on the default, $0.036 on Haiku, same
     # decision quality, 22x. Empty falls back to DEFAULT_MODEL.
     REFRESH_MODEL = env.get("OTTO_REFRESH_MODEL", "claude-haiku-4-5").strip()
+
+    # ---- direct connectors (otto/connectors) ------------------------------------
+    # A domain whose OTTO_REFRESH_<DOMAIN>_CONNECTOR names `google:<alias>` is refreshed
+    # by a plain HTTPS read of Gmail and Calendar under Otto's own read-only OAuth
+    # grant, plus one small model call for the reply-or-awareness verdict, instead of
+    # a whole Claude Code session. Unset (the default) keeps the session path, so
+    # nothing changes until the owner has run `otto google auth <alias>` and switched
+    # the domain on. The token files live under OTTO_HOME/google, never in the repo.
+    for _domain in ("work", "personal"):
+        _raw = env.get(f"OTTO_REFRESH_{_domain.upper()}_CONNECTOR", "").strip().lower()
+        if _raw:
+            _kind, _, _alias = _raw.partition(":")
+            REFRESH_SOURCES.setdefault(_domain, {})["connector"] = {
+                "kind": _kind, "alias": _alias or _domain}
+    GOOGLE_CLIENT_SECRET_FILE = env.get("OTTO_GOOGLE_CLIENT_SECRET_FILE", "").strip()
+    # Gmail search for the mail read. newer_than bounds the window; the category
+    # exclusions are what keep a personal inbox from being ten price alerts a run.
+    GOOGLE_MAIL_QUERY = env.get(
+        "OTTO_GOOGLE_MAIL_QUERY",
+        "newer_than:1d -category:promotions -category:social -category:updates -category:forums",
+    ).strip()
+    GOOGLE_MAIL_MAX = int(env.get("OTTO_GOOGLE_MAIL_MAX", "25"))
+    # The key the classification call uses; "" falls back to ANTHROPIC_API_KEY in the
+    # environment, then to the env-loader cache the Anthropic probe reads.
+    ANTHROPIC_API_KEY = env.get("OTTO_ANTHROPIC_API_KEY", "").strip()
+    # The cheapest current model: the verdict is a classification, not a judgement
+    # call, and the input is a page of subjects and snippets.
+    CLASSIFY_MODEL = env.get("OTTO_CLASSIFY_MODEL", "claude-haiku-5-5").strip() or "claude-haiku-5-5"
 
     # ---- task auto-dispatch -----------------------------------------------------
     # A task in `queued` is dispatched as a real Claude Code session with

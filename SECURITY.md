@@ -117,6 +117,28 @@ web page can reach them. Both are open to local processes, like every other rout
 - `OTTO_HERDR_CLAUDE_ARGS` and herdr `--env` values show in the process list. Do
   not put secrets in them.
 
+### Permission levels (`otto/runners/detached.py`)
+
+Every session Otto starts runs at one of three levels, recorded on the run
+(`permissions`) and in its environment (`OTTO_RUN_PERMISSIONS`):
+
+- **plan**: `--permission-mode plan --permission-prompts none`. Claude Code's own
+  plan mode: reads files, runs read-only commands, and is refused any write
+  (measured: `git log` ran, Write was refused). What a PREPARE run gets, so the
+  rule the prompt states is also one the session cannot cross. No skip flag.
+- **yolo**: `--dangerously-skip-permissions`. The full operator, unattended. What
+  every unattended run was before the levels existed, and still what
+  implementation, the card-reply and DM sessions, and the scheduled loops get,
+  because they act on the board. Nothing elevates to it on its own: a card gets it
+  from `otto task yolo`, `otto task run --yolo`, `otto task set --permissions yolo`,
+  or the dashboard's Run (yolo); a schedule from its own field.
+- **scoped**: neither flag; the caller passes an allow or deny list of its own
+  (the outreach sender is allowed one tool, the writing miner none).
+
+The level is not the guard. `scripts/otto_guard.py` keys off `OTTO_UNATTENDED`
+and gates the same actions at every level; see below for what it does and does
+not catch.
+
 ## What is not enforced
 
 ### The daemon trusts local processes

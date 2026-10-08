@@ -75,7 +75,11 @@ time, and a breaker that disarms a schedule after three failures. Inside a sessi
 the only control is a `PreToolUse` hook that pattern-matches tool input and puts
 destructive-looking commands behind a desktop dialog. That hook is a seatbelt that
 catches mistakes, not a sandbox; [SECURITY.md](SECURITY.md) lists the ways around
-it. Details in [docs/how-it-works.md](docs/how-it-works.md).
+it. Every session runs at a level recorded on the run: `plan` (read-only, writes a
+proposal; what a PREPARE run gets) or `yolo` (`--dangerously-skip-permissions`;
+implementation and the loops that act). Nothing elevates on its own: `otto task
+yolo <id>` is the one-word approval, and `otto task run --plan|--yolo` picks a level
+for one run. Details in [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Limits
 

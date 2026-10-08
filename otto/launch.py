@@ -153,7 +153,9 @@ def launch(store: Store, sched: Schedule, autorun: bool = False) -> tuple[Run, s
             cwd=str(config.HOME),
             agent=None,
             mode="headless",
-            skip_permissions=True,
+            # The schedule's own level; the seeded loops are yolo because they act on
+            # the board (`otto schedule set <name> --permissions plan` to change one).
+            permissions=sched.permissions,
             domain=sched.domain,
             system_extra=extra,
             # A hand-launched run is watched, so it stays uncapped: cutting /daily

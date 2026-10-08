@@ -187,7 +187,9 @@ def submit(store: Store, thread: dict, note: str) -> Run:
             prompt=prompt,
             cwd=str(config.OTTO_HOME),
             mode="headless",
-            skip_permissions=True,
+            # yolo: the verb it picks is an `otto` write (a note, an outreach hold, a
+            # card). Colleague-facing output still goes through the outreach hold.
+            permissions="yolo",
             domain=config.WORK,
             budget_usd=config.THREAD_NOTE_BUDGET_USD or None,
             model=config.THREAD_NOTE_MODEL or None,

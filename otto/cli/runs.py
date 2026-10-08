@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -56,10 +57,11 @@ def cmd_spawn(args, client: Client) -> int:
     run = client.spawn(
         name=args.name, prompt=prompt, cwd=args.cwd or str(Path.cwd()),
         agent=args.agent, mode=args.mode, task_id=args.task,
-        tier=args.tier, skip_permissions=not args.safe, domain=args.domain,
+        tier=args.tier, permissions=args.permissions, domain=args.domain,
         model=args.model,
     )
-    print(f"  spawned {run['name']}  run {persona.short(run['id'])}  pid {run['pid']}")
+    print(f"  spawned {run['name']}  run {persona.short(run['id'])}  pid {run['pid']}  "
+          f"[{run.get('permissions', 'yolo')}]")
     print(f"  log: {run['log']}")
     print(f"  follow: otto logs {persona.short(run['id'])}")
     return 0
@@ -207,8 +209,15 @@ def add_spawn(sub) -> None:
     s.add_argument("--mode", choices=["headless", "windowed"], default="headless")
     s.add_argument("--task", help="external queue id")
     s.add_argument("--tier")
-    s.add_argument("--safe", action="store_true",
-                   help="do NOT pass --dangerously-skip-permissions")
+    lvl = s.add_mutually_exclusive_group()
+    lvl.add_argument("--yolo", dest="permissions", action="store_const", const="yolo",
+                     help="--dangerously-skip-permissions: the full operator (default)")
+    lvl.add_argument("--plan", dest="permissions", action="store_const", const="plan",
+                     help="--permission-mode plan: read-only investigation that writes a plan")
+    # --safe was the old spelling of --plan; kept so a muscle-memory flag still works.
+    lvl.add_argument("--safe", dest="permissions", action="store_const", const="plan",
+                     help=argparse.SUPPRESS)
+    s.set_defaults(permissions="yolo")
     s.add_argument("--domain", choices=["work", "personal"],
                    help="default: inferred from --cwd")
     s.add_argument("--model",

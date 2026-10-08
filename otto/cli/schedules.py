@@ -73,6 +73,7 @@ def cmd_schedule_add(args, client: Client) -> int:
         min_interval_days=args.min_interval_days,
         max_age_hours=args.max_age_hours,
         enabled=not args.disabled,
+        permissions=args.permissions,
     )
     cad = sched["cadence"]
     when = {
@@ -85,6 +86,29 @@ def cmd_schedule_add(args, client: Client) -> int:
     if sched.get("max_age_hours"):
         print(f"  alarms if it has not run in {sched['max_age_hours']}h")
     print(f"  command: {sched['command']}")
+    return 0
+
+
+def cmd_schedule_set(args, client: Client) -> int:
+    """Change a schedule's permission level without retyping the rest of it.
+
+    PUT is create-or-replace, so the current row is read back and re-sent with the
+    one field changed; the daemon keeps the run history across the edit.
+    """
+    cur = next((s for s in client.schedules() if s["name"] == args.name), None)
+    if cur is None:
+        print(f"  no schedule named {args.name}", file=sys.stderr)
+        return 2
+    cad = cur.get("cadence") or {}
+    sched = client.put_schedule(
+        args.name, command=cur["command"], domain=cur.get("domain", "work"),
+        runner=cur.get("runner", "report"), description=cur.get("description"),
+        enabled=cur.get("enabled", True), autostart=cur.get("autostart", False),
+        max_age_hours=cur.get("max_age_hours"), kind=cad.get("kind", "daily"),
+        at=cad.get("at", "08:00"), days=cad.get("days") or [], hours=cad.get("hours"),
+        min_interval_days=cad.get("min_interval_days"), permissions=args.permissions,
+    )
+    print(f"  {sched['name']}: launch runs get {sched['permissions']}")
     return 0
 
 
@@ -238,9 +262,17 @@ def add_schedule(sub) -> None:
                    help="raise an alarm if it has not run in this long")
     a.add_argument("--description")
     a.add_argument("--disabled", action="store_true")
+    a.add_argument("--permissions", choices=["plan", "yolo"], default="yolo",
+                   help="the level a launch run gets (default yolo)")
     a.add_argument("--force", action="store_true",
                    help="store the command even if it looks shell-mangled")
     a.set_defaults(fn=cmd_schedule_add)
+
+    a = sch_sub.add_parser("set", help="change one field of a schedule, keeping the rest")
+    a.add_argument("name")
+    a.add_argument("--permissions", choices=["plan", "yolo"], required=True,
+                   help="the level its launch runs get")
+    a.set_defaults(fn=cmd_schedule_set)
 
     a = sch_sub.add_parser("arm", help="run this schedule unattended, on cadence")
     a.add_argument("name")

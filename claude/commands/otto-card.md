@@ -57,6 +57,15 @@ python -m otto task add "{second thing}" --detail "{their words}" --due {date if
 Leave new cards in `backlog`. **Never `--status queued`**: queued dispatches an agent,
 and a card born from a one-line reply has been through no tier gate.
 
+**Go.** "yolo", "go yolo", "yolo it", "approve and run". He is approving the plan
+on the card and asking for the run at full permissions, now. One command does all
+of it through the gate; if the gate refuses (owner, tier, not assessed), say the
+gate's sentence in the receipt rather than working around it.
+
+```
+python -m otto task yolo {id}
+```
+
 **A question, or asking what you would do.** "what's the fastest way to close this?",
 "is this even still relevant?" Answer from the card and Otto's own state (`otto
 board`, `otto next`, `otto priorities`, `otto decisions`). Suggest at most one concrete

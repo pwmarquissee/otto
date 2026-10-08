@@ -361,6 +361,20 @@ function pill(text, key, iconName) {
   s.appendChild(el("span", null, text));
   return s;
 }
+/* The level a run was started at (models.Run.permissions). plan is read-only and
+ * writes a proposal; yolo is the full operator; scoped is a caller's own allow or
+ * deny list. Drawn wherever a run is named, so the level is never a surprise. */
+const PERM_TITLE = {
+  plan: "--permission-mode plan: read-only investigation that writes a plan",
+  yolo: "--dangerously-skip-permissions: the full operator",
+  scoped: "an allow or deny list of its own, not plan or yolo",
+};
+function permPill(level) {
+  if (!level) return null;
+  const s = el("span", "pill perm perm-" + level, level);
+  s.title = PERM_TITLE[level] || level;
+  return s;
+}
 function domTag(d) {
   const t = el("span", "dom-tag" + (d === "personal" ? " life" : ""));
   t.textContent = d === "personal" ? "life" : "work";

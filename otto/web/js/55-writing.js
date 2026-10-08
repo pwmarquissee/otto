@@ -596,6 +596,8 @@ function inspectRun(s) {
   const title = el("div", "insp-title");
   if (live) title.appendChild(el("span", "spin"));
   title.appendChild(el("h2", null, rec.name));
+  const pp = permPill(rec.permissions);
+  if (pp) title.appendChild(pp);
   title.appendChild(el("span", "spacer"));
   const x = el("button", "insp-x");
   x.type = "button";
@@ -647,6 +649,24 @@ function inspectRun(s) {
       } catch (e) { toast(e.message, true); } finally { stopB.disabled = false; }
     });
     acts.appendChild(stopB);
+  }
+  /* A finished plan run has read and proposed; the next step is the same card at
+   * full permissions, through the gate, in one click (otto task yolo). */
+  if (!live && rec.permissions === "plan" && rec.task_id && rec.status === "ok") {
+    const yb = el("button", "btn btn-primary btn-xs");
+    yb.type = "button";
+    yb.appendChild(ico("ph ph-lightning"));
+    yb.appendChild(el("span", null, "Run again in yolo"));
+    yb.title = "otto task yolo " + rec.task_id.slice(0, 6);
+    yb.addEventListener("click", async () => {
+      yb.disabled = true;
+      try {
+        const r = await act("otto task yolo " + rec.task_id.slice(0, 6), `/api/tasks/${rec.task_id}/yolo`, { method: "POST" });
+        toast(r && r.run ? "running in yolo" : "approved, queued");
+        await poll();
+      } catch (e) { toast(e.message, true); } finally { yb.disabled = false; }
+    });
+    acts.appendChild(yb);
   }
   if (!live && (rec.status === "failed" || rec.status === "orphaned") && !rec.reviewed_at) {
     const ab = el("button", "btn btn-secondary btn-xs");
@@ -858,19 +878,43 @@ function inspectTask(s) {
   const acts = el("div", "insp-acts");
   acts.style.marginTop = "var(--space-6)";
   if (movable) {
-    const rb = el("button", "btn btn-primary btn-sm");
-    rb.type = "button";
-    rb.appendChild(ico("ph ph-play"));
-    rb.appendChild(el("span", null, card.attempts ? "Run again" : "Run now"));
-    rb.addEventListener("click", async () => {
-      rb.disabled = true;
-      try {
-        await act(`otto task run ${card.id.slice(0, 6)}`, `/api/tasks/${card.id}/dispatch`, { method: "POST" });
-        toast("dispatched " + card.id.slice(0, 6));
-        await poll();
-      } catch (e) { toast(e.message, true); } finally { rb.disabled = false; }
-    });
-    acts.appendChild(rb);
+    /* Two buttons, two levels, named so the level is chosen rather than inherited:
+     * plan reads and proposes, yolo is the full operator (models.Run.permissions). */
+    const runBtn = (label, level, primary) => {
+      const rb = el("button", "btn " + (primary ? "btn-primary" : "btn-secondary") + " btn-sm");
+      rb.type = "button";
+      rb.appendChild(ico(primary ? "ph ph-lightning" : "ph ph-play"));
+      rb.appendChild(el("span", null, label));
+      rb.title = PERM_TITLE[level];
+      rb.addEventListener("click", async () => {
+        rb.disabled = true;
+        try {
+          await act(`otto task run ${card.id.slice(0, 6)} --${level}`, `/api/tasks/${card.id}/dispatch?permissions=${level}`, { method: "POST" });
+          toast(`dispatched ${card.id.slice(0, 6)} (${level})`);
+          await poll();
+        } catch (e) { toast(e.message, true); } finally { rb.disabled = false; }
+      });
+      return rb;
+    };
+    acts.appendChild(runBtn("Run (plan)", "plan", false));
+    acts.appendChild(runBtn("Run (yolo)", "yolo", true));
+    if (card.plan && !card.plan_approved) {
+      /* The proposal is on the card; one word approves it and runs it through the gate. */
+      const yb = el("button", "btn btn-primary btn-sm");
+      yb.type = "button";
+      yb.appendChild(ico("ph ph-check"));
+      yb.appendChild(el("span", null, "Approve plan, run in yolo"));
+      yb.title = "otto task yolo " + card.id.slice(0, 6);
+      yb.addEventListener("click", async () => {
+        yb.disabled = true;
+        try {
+          const r = await act(`otto task yolo ${card.id.slice(0, 6)}`, `/api/tasks/${card.id}/yolo`, { method: "POST" });
+          toast(r && r.run ? "approved and running in yolo" : "approved, queued");
+          await poll();
+        } catch (e) { toast(e.message, true); } finally { yb.disabled = false; }
+      });
+      acts.appendChild(yb);
+    }
   }
   if (card.command) {
     const cb = el("button", "btn btn-secondary btn-sm", "Copy command");

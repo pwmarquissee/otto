@@ -224,7 +224,8 @@ def test_spawn_runs_in_a_pane_and_records_it(spawnable, monkeypatch, tmp_path):
     if launcher.WINDOWS:
         assert seen["cmd"][4] == "-Command" and seen["match"] in seen["cmd"][5]
     assert launcher.is_launcher(seen["match"]) and Path(seen["match"]).is_file()
-    assert seen["env"] == {"OTTO_RUN_NAME": "daily", "OTTO_RUN_ID": run.id, "OTTO_UNATTENDED": "1"}
+    assert seen["env"] == {"OTTO_RUN_NAME": "daily", "OTTO_RUN_ID": run.id, "OTTO_UNATTENDED": "1",
+                           "OTTO_RUN_PERMISSIONS": "yolo"}
     assert seen["label"] == "daily" and seen["cwd"] == str(tmp_path)
     assert run.cmd == seen["cmd"]
 
@@ -265,13 +266,16 @@ def test_attended_spawn_is_an_interactive_claude_prompted_through_herdr(spawnabl
 
     monkeypatch.setattr(herdrpane, "launch_claude_interactive", launch)
     run = detached.spawn("fix the thing", "do it", str(tmp_path), mode="windowed",
-                         skip_permissions=False, model="opus", system_extra="context")
+                         permissions="plan", model="opus", system_extra="context")
     assert run.pane_id == "w3:p4" and run.pid == 555
     # No -p, no stream-json: a real session the owner sits at. The system prompt file
     # the launcher wrote is passed by path, never by value.
     assert "-p" not in seen["args"]
     assert seen["args"][:2] == ["--model", "opus"]
     assert "--dangerously-skip-permissions" not in seen["args"]
+    # An attended plan session: plan mode alone, no --permission-prompts (print-only).
+    assert seen["args"][2:4] == ["--permission-mode", "plan"] and "--permission-prompts" not in seen["args"]
+    assert seen["env"]["OTTO_RUN_PERMISSIONS"] == "plan" and run.permissions == "plan"
     assert seen["args"][-2] == "--append-system-prompt-file" and seen["args"][-1].endswith(".sysextra.txt")
     assert Path(seen["args"][-1]).read_text(encoding="utf-8") == "context"
     assert seen["prompt"] == "do it"

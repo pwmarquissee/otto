@@ -56,6 +56,9 @@ OTTO_RUN_NAME, for the dialog title) in the launcher for every headless spawn.
 Windowed sessions and the owner's own interactive sessions never have it, so this
 hook is a no-op there.
 
+OTTO_RUN_PERMISSIONS (plan | yolo | scoped) says which permission level the session
+was started at; this hook does not read it, because it gates the same actions at
+every level.
 WHAT IS GATED when the marker is present:
 
   CRED CHECKOUT    invoking a credential-checkout command (OTTO_GUARD_CRED_COMMANDS,

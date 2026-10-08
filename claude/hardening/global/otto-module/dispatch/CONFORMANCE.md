@@ -20,7 +20,7 @@ must-contain: config.TASK_MAX_BUDGET_USD               # the ordinary per-task s
 must-contain: config.DEEP_BUDGET_USD                   # the deep tier carries its own ceiling, so no dispatch path is uncapped
 must-contain: /budget_usd\s*=\s*budget_usd/            # whichever ceiling model_for() picked still reaches the spawn
 must-contain: /not t\.auto/                            # auto=False still parks a task in queued without running it
-must-contain: skip_permissions=True                    # HARDENING claims permissions are bypassed; if this ever stops being true the doc is wrong
+must-contain: permissions=level                        # the level is chosen (permissions_for: prepare=plan, else yolo), never inherited; HARDENING describes both
 must-contain: /needs-you/                              # a failed run still parks for a human
 must-not-contain: /status\s*=\s*["']queued["']/        # settle() must never write queued back, which would re-dispatch on the next tick
 must-not-contain: /for\s+attempt\s+in\s+range/         # no retry loop, in any form

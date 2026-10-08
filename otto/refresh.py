@@ -12,19 +12,34 @@ mutating tool is denied. That is a narrow enough blast radius to run unattended.
 
 Deliberately NOT a general "autostart any schedule" feature. Only this one runner is
 auto-launchable, so adding a schedule can never accidentally arm something dangerous.
+
+TWO PATHS, SAME SNAPSHOTS. A domain whose settings name a connector
+(`OTTO_REFRESH_<DOMAIN>_CONNECTOR=google:<alias>`, see otto/connectors) is refreshed
+in-process: a direct read of Gmail and Calendar under Otto's own read-only grant,
+one small model call for the reply-or-awareness verdict, the same Snapshot shapes
+written, the same schedule stamped. The Run it returns carries `runner="inline"`
+and no pid; it completes itself from a worker thread, so poll_runs never has to
+poll it. A domain with no connector takes the session path below, unchanged.
 """
 
 from __future__ import annotations
 
 import json
 import subprocess
+import threading
+import time
 import uuid
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import psutil
+import requests
 
-from . import config, launcher
-from .models import Run, Snapshot
+from . import config, launcher, notify
+from .connectors import classify as _classify
+from .connectors import google as _google
+from .models import Run, Snapshot, iso, utcnow
 from .runners import detached
 from .store import Store
 
@@ -113,6 +128,9 @@ def start(store: Store, domain: str = config.WORK) -> Run:
     """
     if domain not in config.DOMAINS:
         raise ValueError(f"unknown domain {domain!r}")
+    conn = connector_for(domain)
+    if conn is not None:
+        return start_connector(store, domain, conn)
     hint = (config.REFRESH_SOURCES.get(domain) or {}).get("hint") or ""
     if not hint.strip():
         raise RuntimeError(
@@ -155,6 +173,195 @@ def start(store: Store, domain: str = config.WORK) -> Run:
         notes=f"mode=refresh domain={domain}",
     )
 
+
+# ---- the direct path -------------------------------------------------------------------
+
+def connector_for(domain: str) -> dict[str, str] | None:
+    """The connector a domain is switched to, or None for the session path."""
+    conn = (config.REFRESH_SOURCES.get(domain) or {}).get("connector")
+    if not isinstance(conn, dict) or not conn.get("kind"):
+        return None
+    return {"kind": str(conn["kind"]), "alias": str(conn.get("alias") or domain)}
+
+
+def _connector_note(domain: str, conn: dict[str, str]) -> str:
+    return f"mode=refresh domain={domain} connector={conn['kind']}:{conn['alias']}"
+
+
+def start_connector(store: Store, domain: str, conn: dict[str, str],
+                    *, session: requests.Session | None = None,
+                    background: bool = True) -> Run:
+    """The direct path. Preflight is synchronous so a missing grant comes back as the
+    caller's "skipped" reason (and one notice) instead of a run that fails a second
+    later; the read and the classification run on a thread.
+
+    `background=False` runs the whole thing before returning, which is what the
+    tests use and what a shell one-off may want.
+    """
+    if conn["kind"] != "google":
+        raise RuntimeError(f"unknown connector kind {conn['kind']!r} for {domain}; only google is wired")
+    sess = session or requests.Session()
+    try:
+        acct = _google.Account(conn["alias"], sess)
+    except _google.GoogleError as e:
+        _owner_notice(store, domain, conn, e)
+        raise RuntimeError(str(e)) from e
+    run = Run(
+        id=uuid.uuid4().hex, name=f"refresh-{domain}", runner="inline", status="running",
+        domain=domain, cwd=None, cmd=[], log=None,
+        model=config.CLASSIFY_MODEL or None,
+        notes=_connector_note(domain, conn),
+    )
+    if not background:
+        return run_connector(store, run, domain, conn, acct)
+    threading.Thread(target=run_connector, args=(store, run, domain, conn, acct),
+                     daemon=True, name=f"otto-refresh-{domain}").start()
+    return run
+
+
+def _owner_notice(store: Store, domain: str, conn: dict[str, str], err: Exception) -> None:
+    """One line telling the owner what to run. Deduped by notify.post, so a grant
+    that stays broken for a day is one notice, not a notice per tick."""
+    code = getattr(err, "code", "api")
+    command = f"otto google auth {conn['alias']}" if code in ("no_token", "consent_expired") else None
+    try:
+        notify.post(store, f"{domain} refresh needs you",
+                    body=str(err), level="warn", domain=domain, source="refresh",
+                    command=command, key=f"refresh-connector-{domain}-{code}")
+    except Exception:  # noqa: BLE001 - a notice failure must not mask the refresh error
+        pass
+
+
+def _hhmm(value: str | None) -> str | None:
+    """A Google timestamp as local HH:MM; None for a date-only (all-day) value."""
+    if not value or "T" not in value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone().strftime("%H:%M")
+    except ValueError:
+        return None
+
+
+def agenda_items(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Calendar rows in the snapshot shape the Today view and prep already read."""
+    items = []
+    for e in events[:10]:
+        row: dict[str, Any] = {"title": str(e.get("title") or "")[:70]}
+        if not e.get("all_day"):
+            when, ends = _hhmm(e.get("start")), _hhmm(e.get("end"))
+            if when:
+                row["when"] = when
+            if ends:
+                row["ends"] = ends
+        if e.get("role"):
+            row["role"] = e["role"]
+        if e.get("who"):
+            row["who"] = ", ".join(e["who"])
+        items.append(row)
+    return items
+
+
+def _sender(raw: str) -> str:
+    """"Tim Hsu <tim@x>" -> "Tim Hsu"; a bare address stays an address."""
+    raw = (raw or "").strip()
+    if "<" in raw:
+        name = raw.split("<", 1)[0].strip().strip('"')
+        return name or raw[raw.find("<") + 1:].rstrip(">")
+    return raw
+
+
+def mail_items(messages: list[dict[str, Any]], verdicts: dict[str, Any]) -> list[dict[str, Any]]:
+    """Mail rows in the snapshot shape, newest first, replies first within the cap."""
+    rows = []
+    for m in messages:
+        v = verdicts.get(m["id"])
+        needs = getattr(v, "needs", None) or "awareness"
+        row: dict[str, Any] = {
+            "title": f"{_sender(m.get('from', ''))}: {m.get('subject') or '(no subject)'}"[:70],
+            "needs": needs,
+        }
+        when = _hhmm(m.get("at"))
+        if when:
+            row["when"] = when
+        why = getattr(v, "why", None)
+        if needs == "reply" and why:
+            row["why"] = str(why)[:120]
+        rows.append(row)
+    rows.sort(key=lambda r: 0 if r["needs"] == "reply" else 1)
+    return rows[:10]
+
+
+def _wait_for_run(store: Store, run_id: str, timeout: float = 5.0) -> None:
+    """The caller of start() records the Run after it returns. A worker that
+    finished first would be overwritten by that record and read as running for
+    ever, so the final write waits until the row exists."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if store.get_run(run_id) is not None:
+            return
+        time.sleep(0.05)
+
+
+def run_connector(store: Store, run: Run, domain: str, conn: dict[str, str],
+                  acct: Any, *, now: datetime | None = None) -> Run:
+    """Read, classify, write the snapshots, stamp the schedule, close the run.
+    Never raises: every failure becomes a failed Run plus one notice."""
+    notes: list[str] = []
+    try:
+        start, end = _google.today_window(now)
+        events = _google.calendar_events(acct, start=start, end=end)
+        messages = _google.gmail_messages(acct, query=config.GOOGLE_MAIL_QUERY,
+                                          max_results=config.GOOGLE_MAIL_MAX)
+        verdict = _classify.classify(messages, owner=config.OWNER_NAME)
+        agenda = agenda_items(events)
+        mail = mail_items(messages, verdict.verdicts)
+        with store.lock:
+            store.put_snapshot(Snapshot(
+                kind="agenda", domain=domain, source="otto-refresh",
+                summary=(f"{len(agenda)} event(s) today" if agenda else "nothing on the calendar today"),
+                items=agenda))
+            store.put_snapshot(Snapshot(
+                kind="mail", domain=domain, source="otto-refresh",
+                summary=verdict.summary[:200] or None, items=mail))
+            owner = next((sc.name for sc in store.schedules()
+                          if sc.runner == "refresh" and sc.domain == domain), None)
+            if owner:
+                store.stamp(owner, "ok", run.id)
+        run.status = "ok"
+        run.exit_code = 0
+        run.input_tokens = verdict.input_tokens
+        run.output_tokens = verdict.output_tokens
+        run.cost_usd = verdict.cost_usd
+        replies = sum(1 for r in mail if r["needs"] == "reply")
+        run.result_summary = (f"{len(agenda)} event(s), {len(messages)} thread(s), "
+                              f"{replies} need a reply")[:400]
+        notes.append(f"{domain}/agenda: {len(agenda)} item(s)")
+        notes.append(f"{domain}/mail: {len(mail)} item(s)")
+    except Exception as e:  # noqa: BLE001 - the tick must never die on a refresh
+        run.status = "failed"
+        run.exit_code = 1
+        # Only an upstream fault is transient: a revoked grant will not heal by retrying.
+        transient = isinstance(e, requests.RequestException) or (
+            isinstance(e, _google.GoogleError) and e.code == "api")
+        run.error_kind = "api" if transient else None
+        run.notes = f"{run.notes or ''} | {type(e).__name__}: {str(e)[:200]}".strip(" |")
+        run.result_summary = str(e)[:400]
+        _owner_notice(store, domain, conn, e)
+        with store.lock:
+            owner = next((sc.name for sc in store.schedules()
+                          if sc.runner == "refresh" and sc.domain == domain), None)
+            if owner:
+                store.stamp(owner, "failed", run.id)
+    run.ended = iso(utcnow())
+    _wait_for_run(store, run.id)
+    with store.lock:
+        store.upsert_run(run)
+        for n in notes:
+            store.log(n, source="refresh", run_id=run.id)
+    return run
+
+
+# ---- the session path's harvest ---------------------------------------------------------
 
 def _extract(payload: str) -> dict | None:
     """Pull the JSON object out of the model's reply.

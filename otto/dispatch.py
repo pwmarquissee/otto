@@ -176,10 +176,10 @@ Domain: {domain}{agent_line}
 
 This is an attended session, opened by {owner} because this card needs a human's
 hands or judgement, so work together: state what you are about to do before you do
-it, ask when a choice is the owner's, and let the owner steer. Normal permission
-prompts apply; do not route around one. When the work is finished, or the owner
-stops, say plainly what was done and what was not, so the card can be closed on
-evidence.
+it, ask when a choice is the owner's, and let the owner steer. If the session asks
+permission for something, the answer is the owner's; do not route around a prompt.
+When the work is finished, or the owner stops, say plainly what was done and what
+was not, so the card can be closed on evidence.
 """
 
 
@@ -244,8 +244,27 @@ def attended_prompt(task: Task) -> str:
     )
 
 
-def dispatch(store: Store, task: Task, force: bool = False) -> tuple[Run | None, str]:
-    """Spawn a task. Returns (run, message). Caller persists nothing else."""
+def permissions_for(task: Task) -> str:
+    """The level a card's next run gets, when the caller did not say.
+
+    A PREPARE run reads and proposes, so it gets `plan`: Claude Code's own plan
+    mode refuses the writes the prompt already forbids, which turns a rule in prose
+    into one the session cannot cross. Anything else is implementation or the
+    data gathering that feeds the board, which is what the owner elevates to
+    `yolo` for; a card can pin either with `otto task set --permissions`.
+    """
+    if task.run_mode == "prepare":
+        return "plan"
+    return task.permissions or "yolo"
+
+
+def dispatch(store: Store, task: Task, force: bool = False,
+             permissions: str | None = None) -> tuple[Run | None, str]:
+    """Spawn a task. Returns (run, message). Caller persists nothing else.
+
+    `permissions` overrides permissions_for(task) for this one run (the dashboard's
+    Run (plan) / Run (yolo) buttons, `otto task run --plan|--yolo`).
+    """
     if not force and not config.TASK_AUTODISPATCH:
         return None, "auto-dispatch is off"
     if not force and task.attempts >= config.TASK_MAX_ATTEMPTS:
@@ -257,6 +276,7 @@ def dispatch(store: Store, task: Task, force: bool = False) -> tuple[Run | None,
 
     cwd = task.cwd or str(config.TASK_DEFAULT_CWD)
     model, budget_usd = model_for(task)
+    level = permissions or permissions_for(task)
 
     try:
         run = detached.spawn(
@@ -267,7 +287,7 @@ def dispatch(store: Store, task: Task, force: bool = False) -> tuple[Run | None,
             mode="headless",
             task_id=task.id,
             tier=task.tier,
-            skip_permissions=True,
+            permissions=level,
             domain=task.domain,
             budget_usd=budget_usd,
             system_extra=findings.instructions(),
@@ -277,7 +297,7 @@ def dispatch(store: Store, task: Task, force: bool = False) -> tuple[Run | None,
         return None, f"could not spawn: {e}"
 
     # Tag it so poll_runs can route the outcome back to the task.
-    run.notes = ((run.notes or "") + " | mode=task").strip(" |")
+    run.notes = ((run.notes or "") + f" | mode=task | perm={level}").strip(" |")
 
     with store.lock:
         fresh = store.get_task(task.id) or task

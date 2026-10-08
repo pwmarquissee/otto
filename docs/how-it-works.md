@@ -153,6 +153,15 @@ is what Otto's hooks key sessions on, so a pane and a session are the same thing
 - The daemon outlives the window. Closing the desktop window hides it; Quit from the
   tray leaves the daemon running. `otto stop` is a separate act.
 
+Every session runs at a permission level recorded on the run: `plan`
+(`--permission-mode plan`, read-only, writes a proposal; what a PREPARE run gets),
+`yolo` (`--dangerously-skip-permissions`, the full operator; implementation and the
+loops that act on the board), or `scoped` (a caller's own allow list). Nothing
+elevates on its own: `otto task yolo <id>` approves the card's plan and runs it at
+yolo through the gate; `otto task run --plan|--yolo` and the dashboard's Run (plan) /
+Run (yolo) pick a level for one run; `otto schedule set <name> --permissions` sets a
+schedule's.
+
 ## Scopes
 
 `OTTO_SCOPE=core` (the default) is the orchestrator this document describes: board,

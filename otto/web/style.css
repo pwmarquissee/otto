@@ -541,6 +541,12 @@ i.ph, i[class*=" ph-"], i[class^="ph-"] { display: inline-block; font-style: nor
   line-height: 16px; white-space: nowrap;
 }
 .pill > i { font-size: 12px; }
+/* Permission level of a run (permPill in js/10-helpers.js): plan reads and proposes,
+ * yolo is the full operator, scoped is a caller's own allow list. */
+.pill.perm { font-size: 9.5px; padding: 0 6px; }
+.pill.perm-plan { color: var(--ok); background: var(--ok-bg); }
+.pill.perm-yolo { color: var(--warn); background: var(--warn-bg); }
+.pill.perm-scoped { color: var(--color-text-muted); background: var(--accent-soft); }
 .cmd-btn {
   display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 9px;

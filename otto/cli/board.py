@@ -197,10 +197,13 @@ def cmd_task_set(args, client: Client) -> int:
             (cur.get("detail") or "").rstrip(),
             f"--- appended {stamp} UTC ---\n{detail.strip()}",
         ) if x)
+    # "derive" clears the pin: the daemon stores "" as None (api/tasks.py).
+    permissions = {None: None, "derive": ""}.get(args.permissions, args.permissions)
     changes = {k: v for k, v in (
         ("title", args.title), ("priority", args.priority),
         ("domain", args.domain), ("detail", detail),
         ("agent", args.agent), ("due", args.due),
+        ("permissions", permissions),
     ) if v is not None}
     if not changes:
         print("  nothing to change", file=sys.stderr)
@@ -315,7 +318,7 @@ def cmd_task_open(args, client: Client) -> int:
     run = client.spawn(
         name=task.title[:40], prompt=_dispatch.attended_prompt(task), cwd=cwd,
         agent=task.agent, mode="windowed", task_id=task.id, tier=task.tier,
-        skip_permissions=False, domain=task.domain, model=args.model,
+        permissions=args.permissions, domain=task.domain, model=args.model,
         notes="mode=task | mode=attended",
     )
     client.patch_task(task.id, status="running", run_id=run["id"], cwd=cwd)
@@ -361,13 +364,37 @@ def cmd_propose(args, client: Client) -> int:
 def cmd_task_run(args, client: Client) -> int:
     """Dispatch a task now, regardless of the queue's pace."""
     try:
-        r = client.dispatch_task(args.task_id, force=args.force)
+        r = client.dispatch_task(args.task_id, force=args.force, permissions=args.permissions)
     except RuntimeError as e:
         print(_c(f"  {e}", C_YEL), file=sys.stderr)
         return 1
     run = r["run"]
-    print(f"  {r['message']}")
+    print(f"  {r['message']}  [{run.get('permissions', 'yolo')}]")
     print(f"  follow: otto logs {persona.short(run['id'])}")
+    return 0
+
+
+def cmd_task_yolo(args, client: Client) -> int:
+    """The one-word approval: approve the plan the card holds, pin yolo, run it now.
+
+    Goes through the same gate `triage promote` uses, so a card Otto may not run
+    (owned by the owner, assistive tier, not assessed) prints the gate's sentence
+    and stops. The word answers the plan gate, nothing else.
+    """
+    try:
+        r = client.yolo_task(args.task_id)
+    except RuntimeError as e:
+        print(_c(f"  REFUSED  {e}", C_YEL), file=sys.stderr)
+        return 1
+    t = r["task"]
+    print(_c(f"  yolo  {t['id'][:6]}  {t['title'][:50]}", C_GRN))
+    if t.get("plan_approved"):
+        print(f"  plan approved {t['plan_approved'][:16].replace('T', ' ')} UTC, level yolo")
+    if r.get("run"):
+        print(f"  {r['message']}")
+        print(f"  follow: otto logs {persona.short(r['run']['id'])}")
+    else:
+        print(_c(f"  queued, not started this instant: {r['message']}", C_DIM))
     return 0
 
 
@@ -489,6 +516,8 @@ def add_task(sub) -> None:
     a.add_argument("--append", action="store_true",
                    help="append --detail/--detail-file to the existing detail, dated, "
                         "instead of replacing it")
+    a.add_argument("--permissions", choices=["plan", "yolo", "derive"],
+                   help="pin the level the next run gets; derive = prepare runs plan, the rest yolo")
     a.set_defaults(fn=cmd_task_set)
 
     a = tsk_sub.add_parser("plan", help="read, write, or approve the plan a run will follow")
@@ -505,13 +534,28 @@ def add_task(sub) -> None:
     a.add_argument("task_id")
     a.add_argument("--cwd", help="where the session runs; defaults to the card's cwd")
     a.add_argument("--model", help="default: the ordinary task model")
-    a.set_defaults(fn=cmd_task_open)
+    lvl = a.add_mutually_exclusive_group()
+    lvl.add_argument("--yolo", dest="permissions", action="store_const", const="yolo",
+                     help="--dangerously-skip-permissions: the full operator (default: you are at the keyboard)")
+    lvl.add_argument("--plan", dest="permissions", action="store_const", const="plan",
+                     help="--permission-mode plan: read-only investigation that writes a plan")
+    a.set_defaults(fn=cmd_task_open, permissions="yolo")
 
     a = tsk_sub.add_parser("run", help="dispatch a task now")
     a.add_argument("task_id")
     a.add_argument("--force", action="store_true",
                    help="ignore the attempt cap and the master switch")
-    a.set_defaults(fn=cmd_task_run)
+    lvl = a.add_mutually_exclusive_group()
+    lvl.add_argument("--yolo", dest="permissions", action="store_const", const="yolo",
+                     help="--dangerously-skip-permissions: the full operator")
+    lvl.add_argument("--plan", dest="permissions", action="store_const", const="plan",
+                     help="--permission-mode plan: read-only investigation that writes a plan")
+    a.set_defaults(fn=cmd_task_run, permissions=None)
+
+    a = tsk_sub.add_parser("yolo", help="approve the card's plan and run it now at full "
+                                        "permissions (the one-word approval)")
+    a.add_argument("task_id")
+    a.set_defaults(fn=cmd_task_yolo)
 
     a = tsk_sub.add_parser("reply", help="answer a card: update it, or give Otto context")
     a.add_argument("task_id")

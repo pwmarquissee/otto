@@ -218,7 +218,9 @@ def _dispatch(store: Store, channel: str, message: dict, prompt: str,
             prompt=prompt,
             cwd=str(config.HOME),
             mode="headless",
-            skip_permissions=True,
+            # yolo: the summon answers in the thread through `otto reply` and files a
+            # card, both writes. The guard hook still applies.
+            permissions="yolo",
             domain=config.WORK,
             system_extra=extra,
             budget_usd=config.SUMMON_BUDGET_USD or None,

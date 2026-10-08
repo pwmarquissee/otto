@@ -324,6 +324,8 @@ function viewHistory() {
       body.style.minWidth = "0";
       const top = el("div", "top");
       top.appendChild(el("strong", null, r.name));
+      const pp = permPill(r.permissions);
+      if (pp) top.appendChild(pp);
       if (r.verdict) top.appendChild(lanes(r.verdict, true));
       else {
         const st = el("span", "mono-dim", r.status);

@@ -18,16 +18,16 @@ from collections.abc import Callable
 
 from .. import config
 from ..client import Client, DaemonDown
-from . import (assistant, board, checkin, converse, decisions, definitions, insight, posts,
-               runs, schedules, service, sessions, slack, spend, triage)
+from . import (assistant, board, checkin, converse, decisions, definitions, google, insight,
+               posts, runs, schedules, service, sessions, slack, spend, triage)
 from ._fmt import C_RED, _c
 from ._text import DetailError, _resolve_detail  # noqa: F401  # re-exported: tests and tools import them from otto.cli
 
 _MODULES = (insight, spend, runs, schedules, board, triage, decisions, sessions, slack,
-            converse, definitions, service, assistant, checkin, posts)
+            converse, google, definitions, service, assistant, checkin, posts)
 
 # The verb order of `otto --help`: the order the flat cli.py registered them in.
-ORDER = ['status', 'reply', 'post', 'tell', 'priorities', 'spend', 'ledger', 'telemetry', 'runs', 'logs', 'spawn', 'kill', 'done', 'registry', 'scan', 'schedules', 'due', 'schedule', 'agenda', 'notices', 'notify', 'day', 'machine', 'stamp', 'toggle', 'probe', 'events', 'board', 'task', 'triage', 'chat', 'propose', 'launch', 'autorun', 'sessions', 'dispatch', 'app', 'herdr', 'live', 'watch', 'autodispatch', 'next', 'gaps', 'manifest', 'identity', 'feeds', 'decide', 'decisions', 'decision', 'ack', 'known', 'retire', 'skills', 'refresh', 'config', 'serve', 'prune', 'ensure', 'restart', 'setup', 'stop', 'doctor', 'say']
+ORDER = ['status', 'reply', 'post', 'tell', 'priorities', 'spend', 'ledger', 'telemetry', 'runs', 'logs', 'spawn', 'kill', 'done', 'registry', 'scan', 'schedules', 'due', 'schedule', 'agenda', 'notices', 'notify', 'day', 'machine', 'stamp', 'toggle', 'probe', 'events', 'board', 'task', 'triage', 'chat', 'propose', 'launch', 'autorun', 'sessions', 'dispatch', 'app', 'herdr', 'live', 'watch', 'autodispatch', 'next', 'gaps', 'manifest', 'identity', 'feeds', 'decide', 'decisions', 'decision', 'ack', 'known', 'retire', 'skills', 'refresh', 'google', 'config', 'serve', 'prune', 'ensure', 'restart', 'setup', 'stop', 'doctor', 'say']
 
 # Added after ORDER, and only under the assistant scope. The scope test checks
 # `otto --help` against assistant.COMMANDS, so this list and that one agree.
