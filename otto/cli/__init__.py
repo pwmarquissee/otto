@@ -27,7 +27,7 @@ _MODULES = (insight, spend, runs, schedules, board, triage, decisions, sessions,
             converse, definitions, service, assistant, checkin, posts)
 
 # The verb order of `otto --help`: the order the flat cli.py registered them in.
-ORDER = ['status', 'reply', 'post', 'tell', 'priorities', 'spend', 'ledger', 'telemetry', 'runs', 'logs', 'spawn', 'kill', 'done', 'registry', 'scan', 'schedules', 'due', 'schedule', 'agenda', 'notices', 'notify', 'day', 'machine', 'stamp', 'toggle', 'probe', 'events', 'board', 'task', 'triage', 'chat', 'propose', 'launch', 'autorun', 'sessions', 'dispatch', 'app', 'herdr', 'live', 'watch', 'autodispatch', 'next', 'gaps', 'manifest', 'identity', 'feeds', 'decide', 'decisions', 'decision', 'ack', 'known', 'retire', 'skills', 'refresh', 'config', 'serve', 'prune', 'ensure', 'restart', 'setup', 'stop', 'doctor', 'migrate', 'say']
+ORDER = ['status', 'reply', 'post', 'tell', 'priorities', 'spend', 'ledger', 'telemetry', 'runs', 'logs', 'spawn', 'kill', 'done', 'registry', 'scan', 'schedules', 'due', 'schedule', 'agenda', 'notices', 'notify', 'day', 'machine', 'stamp', 'toggle', 'probe', 'events', 'board', 'task', 'triage', 'chat', 'propose', 'launch', 'autorun', 'sessions', 'dispatch', 'app', 'herdr', 'live', 'watch', 'autodispatch', 'next', 'gaps', 'manifest', 'identity', 'feeds', 'decide', 'decisions', 'decision', 'ack', 'known', 'retire', 'skills', 'refresh', 'config', 'serve', 'prune', 'ensure', 'restart', 'setup', 'stop', 'doctor', 'say']
 
 # Added after ORDER, and only under the assistant scope. The scope test checks
 # `otto --help` against assistant.COMMANDS, so this list and that one agree.

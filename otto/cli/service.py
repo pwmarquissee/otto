@@ -1,4 +1,4 @@
-"""The daemon itself: serve, ensure, stop, restart, setup, doctor, probe, config, migrate."""
+"""The daemon itself: serve, ensure, stop, restart, setup, doctor, probe, config."""
 
 from __future__ import annotations
 
@@ -435,11 +435,6 @@ def cmd_doctor(args, client: Client) -> int:
     return 0 if ok else 1
 
 
-def cmd_migrate(args, client: Client) -> int:
-    from ..migrate import migrate
-    return migrate(client, dry_run=args.dry_run)
-
-
 def add_probe(sub) -> None:
     s = sub.add_parser("probe", help="check integration liveness")
     s.add_argument("--json", action="store_true")
@@ -510,12 +505,6 @@ def add_doctor(sub) -> None:
     s.set_defaults(fn=cmd_doctor)
 
 
-def add_migrate(sub) -> None:
-    s = sub.add_parser("migrate", help="absorb existing orchestrator ledgers")
-    s.add_argument("--dry-run", action="store_true")
-    s.set_defaults(fn=cmd_migrate)
-
-
 PARSERS = {
     "probe": add_probe,
     "config": add_config,
@@ -525,5 +514,4 @@ PARSERS = {
     "setup": add_setup,
     "stop": add_stop,
     "doctor": add_doctor,
-    "migrate": add_migrate,
 }

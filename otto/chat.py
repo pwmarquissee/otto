@@ -91,7 +91,7 @@ say so plainly instead of inventing a plausible-looking one.
   otto agenda [--push agenda|mail]       calendar/mail snapshots
   otto machine                           host facts
   otto registry [--kind agent|skill|command|project] [--domain ...]
-  otto scan | otto events | otto doctor | otto migrate | otto serve | otto say
+  otto scan | otto events | otto doctor | otto serve | otto say
   otto writing                           post ideas, drafts, and what was posted
   otto writing ideas                     mine the last week for post ideas now
   otto writing draft <id> [--note "..."] draft a post, or redraft it with a note

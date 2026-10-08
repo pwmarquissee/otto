@@ -469,7 +469,6 @@ def resolve(environ: Mapping[str, str] | None = None, path: Path | None = None) 
 
     HOME = Path.home()
     CLAUDE_DIR = HOME / ".claude"
-    ORCHESTRATOR_DIR = CLAUDE_DIR / "orchestrator"
     # Where Claude Code writes session transcripts. A hook payload's transcript_path is
     # read only when it is under one of these (sessions.transcript_allowed): the path
     # arrives in a POST any local process can send, and reading whatever it names

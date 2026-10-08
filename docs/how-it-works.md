@@ -181,8 +181,7 @@ core lacks; what differs is what the daemon loads.
   `app`
 - Daemon and config: `serve`, `ensure`, `stop`, `restart`, `setup`, `doctor`,
   `probe`, `identity`, `manifest`, `registry`, `scan`, `feeds`,
-  `config status|deploy|adopt|snapshot|backup`, `telemetry status|install|uninstall`,
-  `migrate`
+  `config status|deploy|adopt|snapshot|backup`, `telemetry status|install|uninstall`
 - Core, needing an integration configured: `chat`, `refresh`, `notify`, `reply`,
   `post`, `tell`, `skills audit`
 - Assistant scope only (`OTTO_SCOPE=assistant`): `meetings ingest`, `prep`,
