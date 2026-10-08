@@ -210,7 +210,7 @@ def test_yolo_approves_the_plan_pins_the_level_and_runs(api, monkeypatch):
 def test_yolo_still_obeys_the_gate(api, monkeypatch):
     seen = _capture_spawn(monkeypatch)
     owned = card("c", status="backlog", owner="owner", plan="x")
-    api.store.upsert_task(paul)
+    api.store.upsert_task(owned)
     r = api.post(f"/api/tasks/{owned.id}/yolo")
     assert r.status_code == 409 and "owned by" in r.json()["detail"]
     assert seen == [] and api.store.get_task(owned.id).plan_approved is None
